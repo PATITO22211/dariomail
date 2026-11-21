@@ -1,56 +1,72 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { CURRENT_USER, SEED_THREADS } from './data/seedThreads';
 import type {
   CommandItem,
+  ComposeAttachment,
   ComposePayload,
   FolderId,
   MailThread,
   ThemeMode,
 } from './types/mail';
 import {
-  appendReplyToThread,
+  ApiError,
+  createMailApi,
+  detailToThread,
   emptyTrashThreads,
   filterThreadsForFolder,
   FOLDER_META,
-  getFolderCounts,
   moveThreadToFolder,
-  saveDraftThread,
-  sendEmailThread,
   setThreadUnread,
+  stripHtmlToSnippet,
+  summaryToThread,
+  toSendAttachments,
+  type MailApi,
+  type MailboxInfo,
+  type ThreadSummary,
 } from './utils/mailStore';
 import { LiquidSidebar } from './components/LiquidSidebar';
 import { ThreadFeed } from './components/ThreadFeed';
 import { ReadingRoom } from './components/ReadingRoom';
 import { ComposeModal, type ComposeInitialState } from './components/ComposeModal';
 import { CommandPalette } from './components/CommandPalette';
+import { LoginScreen } from './components/LoginScreen';
 
-const STORAGE_KEY = 'dariomail-threads-v1';
 const THEME_KEY = 'dariomail-theme-v3';
-const REFERENCE_NOW_ISO = '2026-11-20T16:24:00Z';
-
-function loadInitialThreads(): MailThread[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return SEED_THREADS;
-    const parsed = JSON.parse(raw) as MailThread[];
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
-    }
-  } catch {
-    // Fallback to seed data
-  }
-  return SEED_THREADS;
-}
 
 function loadInitialTheme(): ThemeMode {
   try {
     const saved = localStorage.getItem(THEME_KEY);
     if (saved === 'light' || saved === 'dark') return saved;
   } catch {
-    // Default to warm espresso dark mode
+    // Tema oscuro por defecto
   }
   return 'dark';
+}
+
+function messageOf(err: unknown): string {
+  if (err instanceof ApiError) return err.message;
+  return 'No se pudo completar la operación';
+}
+
+function countsFromMailboxes(list: MailboxInfo[]): Record<FolderId, number> {
+  const counts: Record<FolderId, number> = {
+    inbox: 0,
+    sent: 0,
+    drafts: 0,
+    archive: 0,
+    trash: 0,
+  };
+  for (const mailbox of list) {
+    if (mailbox.folder === 'inbox') counts.inbox = mailbox.unreadEmails;
+    if (mailbox.folder === 'drafts') counts.drafts = mailbox.totalEmails;
+    if (mailbox.folder === 'trash') counts.trash = mailbox.totalEmails;
+  }
+  return counts;
+}
+
+function emailIdsOf(thread: MailThread): string[] {
+  if (thread.messageIds?.length) return thread.messageIds;
+  return thread.messages.map((message) => message.id).filter((id) => !id.endsWith('-preview'));
 }
 
 interface WhisperNotice {
@@ -60,14 +76,36 @@ interface WhisperNotice {
 }
 
 export default function App() {
-  const [threads, setThreads] = useState<MailThread[]>(loadInitialThreads);
+  const apiRef = useRef<MailApi | null>(null);
+  if (!apiRef.current) apiRef.current = createMailApi();
+  const api = apiRef.current;
+
+  const [ready, setReady] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authPending, setAuthPending] = useState(false);
+  const [user, setUser] = useState({ email: '', name: '' });
+  const [mailboxes, setMailboxes] = useState<MailboxInfo[]>([]);
+  const [threads, setThreads] = useState<MailThread[]>([]);
+  const [counts, setCounts] = useState<Record<FolderId, number>>({
+    inbox: 0,
+    sent: 0,
+    drafts: 0,
+    archive: 0,
+    trash: 0,
+  });
   const [theme, setTheme] = useState<ThemeMode>(loadInitialTheme);
   const [activeFolder, setActiveFolder] = useState<FolderId>('inbox');
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [deepReading, setDeepReading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchHits, setSearchHits] = useState<MailThread[]>([]);
+  const [searchCursor, setSearchCursor] = useState<string | null>(null);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [paletteRemote, setPaletteRemote] = useState<CommandItem[]>([]);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [referenceNow] = useState(() => new Date().toISOString());
 
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitial, setComposeInitial] = useState<ComposeInitialState>({
@@ -82,57 +120,180 @@ export default function App() {
   const feedScrollRef = useRef<number>(0);
   const noticeTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const selectedRef = useRef<string | null>(null);
+  const loadGen = useRef(0);
 
-  // Persist threads
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(threads));
-    } catch {
-      // Ignore storage quota errors
-    }
-  }, [threads]);
+    selectedRef.current = selectedThreadId;
+  }, [selectedThreadId]);
 
-  // Sync theme to <html> class & storage
   useEffect(() => {
     const root = document.documentElement;
-    if (theme === 'dark') {
-      root.classList.add('dark');
-    } else {
-      root.classList.remove('dark');
-    }
+    if (theme === 'dark') root.classList.add('dark');
+    else root.classList.remove('dark');
     try {
       localStorage.setItem(THEME_KEY, theme);
     } catch {
-      // Ignore
+      // Sin almacenamiento
     }
   }, [theme]);
 
-  // Exit deep reading automatically if no thread is open
   useEffect(() => {
-    if (!selectedThreadId && deepReading) {
-      setDeepReading(false);
-    }
+    if (!selectedThreadId && deepReading) setDeepReading(false);
   }, [selectedThreadId, deepReading]);
 
   const showNotice = useCallback((text: string, undo?: () => void) => {
-    if (noticeTimerRef.current) {
-      window.clearTimeout(noticeTimerRef.current);
-    }
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
     setNotice({ id: Date.now(), text, undo });
-    noticeTimerRef.current = window.setTimeout(() => {
-      setNotice(null);
-    }, 3400);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 3400);
   }, []);
 
-  const folderCounts = useMemo(() => getFolderCounts(threads), [threads]);
+  const reload = useCallback(async () => {
+    const gen = ++loadGen.current;
+    const nextMailboxes = await api.mailboxes();
+    if (gen !== loadGen.current) return;
+    setMailboxes(nextMailboxes);
+    setCounts(countsFromMailboxes(nextMailboxes));
+    const folders: FolderId[] = ['inbox', 'sent', 'drafts', 'archive', 'trash'];
+    const groups = await Promise.all(
+      folders.map(async (folder) => {
+        const mailboxId = nextMailboxes.find((mailbox) => mailbox.folder === folder)?.id;
+        if (!mailboxId) return [];
+        const page = await api.threads(mailboxId, 40);
+        return page.threads.map((thread) => summaryToThread(thread, folder));
+      })
+    );
+    if (gen !== loadGen.current) return;
+    const incoming = groups.flat();
+    setThreads((prev) =>
+      incoming.map((item) => {
+        const previous = prev.find((thread) => thread.id === item.id);
+        const keepDetail =
+          previous &&
+          previous.id === selectedRef.current &&
+          previous.messages.some((message) => message.bodyHtml && !message.id.endsWith('-preview'));
+        if (keepDetail && previous) {
+          return { ...previous, unread: item.unread, folder: item.folder, subject: item.subject };
+        }
+        return item;
+      })
+    );
+  }, [api]);
 
-  const visibleThreads = useMemo(
-    () => filterThreadsForFolder(threads, activeFolder, searchQuery),
-    [threads, activeFolder, searchQuery]
-  );
+  useEffect(() => {
+    let cancel = false;
+    void (async () => {
+      try {
+        const me = await api.me();
+        if (cancel) return;
+        setUser(me);
+        setAuthed(true);
+      } catch (err) {
+        if (cancel) return;
+        setAuthed(false);
+        if (err instanceof ApiError && err.status !== 401) setAuthError(err.message);
+      } finally {
+        if (!cancel) setReady(true);
+      }
+    })();
+    return () => {
+      cancel = true;
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (!authed) return;
+    void reload().catch((err) => showNotice(messageOf(err)));
+  }, [authed, reload, showNotice]);
+
+  useEffect(() => {
+    if (!authed) return;
+    if (import.meta.env.VITE_DARIOMAIL_MOCK === '1' || import.meta.env.VITE_DARIOMAIL_MOCK === 'true') {
+      return;
+    }
+    const source = new EventSource('/api/events', { withCredentials: true });
+    let timer = 0;
+    const kick = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void reload().catch(() => undefined);
+      }, 500);
+    };
+    source.addEventListener('state', kick);
+    source.onmessage = kick;
+    return () => {
+      window.clearTimeout(timer);
+      source.close();
+    };
+  }, [authed, reload]);
+
+  const visibleThreads = useMemo(() => {
+    if (searchQuery.trim()) return searchHits;
+    return filterThreadsForFolder(threads, activeFolder, '');
+  }, [searchHits, searchQuery, threads, activeFolder]);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!authed || !query) {
+      setSearchHits([]);
+      setSearchCursor(null);
+      return;
+    }
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const mailboxId = mailboxes.find((mailbox) => mailbox.folder === activeFolder)?.id;
+          const page = await api.search(query, mailboxId);
+          if (cancel) return;
+          setSearchHits(page.threads.map((item) => summaryToThread(item, item.folder || activeFolder)));
+          setSearchCursor(page.cursor);
+        } catch (err) {
+          if (!cancel) showNotice(messageOf(err));
+        }
+      })();
+    }, 280);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [searchQuery, activeFolder, authed, api, mailboxes, showNotice]);
+
+  useEffect(() => {
+    const query = paletteQuery.trim();
+    if (!paletteOpen || query.length < 2) {
+      setPaletteRemote([]);
+      return;
+    }
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const page = await api.search(query);
+          if (cancel) return;
+          setPaletteRemote(
+            page.threads.map((item) => ({
+              id: `find-${item.id}`,
+              label: item.subject,
+              hint: item.sender.name,
+              group: 'Hilos' as const,
+              keywords: [query],
+              run: () => openFoundThread(item),
+            }))
+          );
+        } catch {
+          if (!cancel) setPaletteRemote([]);
+        }
+      })();
+    }, 280);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [paletteQuery, paletteOpen, api]);
 
   const selectedThread = useMemo(
-    () => threads.find((t) => t.id === selectedThreadId) ?? null,
+    () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId]
   );
 
@@ -142,15 +303,47 @@ export default function App() {
     }
   }, [visibleThreads.length, focusedIndex]);
 
+  const openFoundThread = useCallback(
+    (item: ThreadSummary) => {
+      const folder = item.folder || 'inbox';
+      setActiveFolder(folder);
+      setSearchQuery('');
+      handleOpenRef.current(summaryToThread(item, folder));
+    },
+    []
+  );
+
+  const handleOpenRef = useRef<(thread: MailThread) => void>(() => undefined);
+
   const openCompose = useCallback((preset?: Partial<ComposeInitialState>) => {
     setComposeInitial({
       draftThreadId: preset?.draftThreadId,
       to: preset?.to ?? '',
       subject: preset?.subject ?? '',
       bodyHtml: preset?.bodyHtml ?? '',
+      attachments: preset?.attachments,
     });
     setComposeOpen(true);
   }, []);
+
+  const handleLogin = useCallback(
+    (password: string) => {
+      setAuthPending(true);
+      setAuthError(null);
+      void (async () => {
+        try {
+          const me = await api.login(password);
+          setUser(me);
+          setAuthed(true);
+        } catch (err) {
+          setAuthError(messageOf(err));
+        } finally {
+          setAuthPending(false);
+        }
+      })();
+    },
+    [api]
+  );
 
   const handleSelectFolder = useCallback((folder: FolderId) => {
     setActiveFolder(folder);
@@ -161,164 +354,408 @@ export default function App() {
     feedScrollRef.current = 0;
   }, []);
 
+  const resolveIds = useCallback(
+    async (thread: MailThread) => {
+      const ids = emailIdsOf(thread);
+      if (ids.length) return ids;
+      const full = detailToThread(await api.thread(thread.id), thread.folder);
+      return emailIdsOf(full);
+    },
+    [api]
+  );
+
   const handleOpenThread = useCallback(
     (thread: MailThread) => {
-      if (thread.folder === 'drafts') {
-        openCompose({
-          draftThreadId: thread.id,
-          to: thread.draftTo ?? thread.messages[0]?.recipients[0] ?? '',
-          subject: thread.subject === '(Sin asunto)' ? '' : thread.subject,
-          bodyHtml: thread.draftBodyHtml ?? thread.messages[0]?.bodyHtml ?? '',
-        });
-        return;
-      }
-
-      if (thread.unread) {
-        setThreads((prev) => setThreadUnread(prev, thread.id, false));
-      }
-      setSelectedThreadId(thread.id);
+      selectedRef.current = thread.folder === 'drafts' ? selectedRef.current : thread.id;
+      void (async () => {
+        try {
+          const full = detailToThread(await api.thread(thread.id), thread.folder);
+          if (thread.folder === 'drafts') {
+            const message = full.messages[full.messages.length - 1];
+            const raw = full.rawSubject && full.rawSubject !== '(Sin asunto)' ? full.rawSubject : '';
+            openCompose({
+              draftThreadId: message?.id,
+              to: full.draftTo ?? message?.recipients[0] ?? '',
+              subject: raw,
+              bodyHtml: message?.bodyHtml ?? '',
+            });
+            return;
+          }
+          setThreads((prev) => {
+            const exists = prev.some((item) => item.id === thread.id);
+            if (!exists) return [full, ...prev];
+            return prev.map((item) => (item.id === thread.id ? full : item));
+          });
+          setSelectedThreadId(thread.id);
+          const unreadIds = full.messages.filter((message) => message.unread).map((message) => message.id);
+          if (unreadIds.length) {
+            await Promise.all(unreadIds.map((id) => api.markRead(id)));
+            setThreads((prev) => setThreadUnread(prev, thread.id, false));
+            const next = await api.mailboxes();
+            setMailboxes(next);
+            setCounts(countsFromMailboxes(next));
+          }
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [openCompose]
+    [api, openCompose, showNotice]
   );
 
   const handleArchiveThread = useCallback(
     (threadId: string) => {
-      const target = threads.find((t) => t.id === threadId);
-      if (!target) return;
+      const target = threads.find((thread) => thread.id === threadId);
+      if (!target || target.folder === 'archive' || target.folder === 'trash') return;
       const previousFolder = target.folder;
       const previousUnread = target.unread;
-
-      setThreads((prev) => moveThreadToFolder(prev, threadId, 'archive'));
-      if (selectedThreadId === threadId) {
-        setSelectedThreadId(null);
-        setDeepReading(false);
-      }
-
-      showNotice('Archivado', () => {
-        setThreads((prev) =>
-          setThreadUnread(
-            moveThreadToFolder(prev, threadId, previousFolder),
-            threadId,
-            previousUnread
-          )
-        );
-      });
+      void (async () => {
+        try {
+          const ids = await resolveIds(target);
+          await Promise.all(ids.map((id) => api.archive(id)));
+          setThreads((prev) => moveThreadToFolder(prev, threadId, 'archive'));
+          if (selectedThreadId === threadId) {
+            setSelectedThreadId(null);
+            setDeepReading(false);
+          }
+          const next = await api.mailboxes();
+          setMailboxes(next);
+          setCounts(countsFromMailboxes(next));
+          const previousMailbox = next.find((mailbox) => mailbox.folder === previousFolder)?.id;
+          showNotice('Archivado', () => {
+            if (!previousMailbox) return;
+            void (async () => {
+              await Promise.all(ids.map((id) => api.move(id, previousMailbox)));
+              setThreads((prev) =>
+                setThreadUnread(moveThreadToFolder(prev, threadId, previousFolder), threadId, previousUnread)
+              );
+              const restored = await api.mailboxes();
+              setMailboxes(restored);
+              setCounts(countsFromMailboxes(restored));
+            })().catch((err) => showNotice(messageOf(err)));
+          });
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [threads, selectedThreadId, showNotice]
+    [api, resolveIds, selectedThreadId, showNotice, threads]
   );
 
   const handleTrashThread = useCallback(
     (threadId: string) => {
-      const target = threads.find((t) => t.id === threadId);
-      if (!target) return;
+      const target = threads.find((thread) => thread.id === threadId);
+      if (!target || target.folder === 'trash') return;
       const previousFolder = target.folder;
       const previousUnread = target.unread;
-
-      setThreads((prev) => moveThreadToFolder(prev, threadId, 'trash'));
-      if (selectedThreadId === threadId) {
-        setSelectedThreadId(null);
-        setDeepReading(false);
-      }
-
-      showNotice('En papelera', () => {
-        setThreads((prev) =>
-          setThreadUnread(
-            moveThreadToFolder(prev, threadId, previousFolder),
-            threadId,
-            previousUnread
-          )
-        );
-      });
+      void (async () => {
+        try {
+          const ids = await resolveIds(target);
+          await Promise.all(ids.map((id) => api.trash(id)));
+          setThreads((prev) => moveThreadToFolder(prev, threadId, 'trash'));
+          if (selectedThreadId === threadId) {
+            setSelectedThreadId(null);
+            setDeepReading(false);
+          }
+          const next = await api.mailboxes();
+          setMailboxes(next);
+          setCounts(countsFromMailboxes(next));
+          const previousMailbox = mailboxes.find((mailbox) => mailbox.folder === previousFolder)?.id;
+          showNotice('En papelera', () => {
+            if (!previousMailbox) return;
+            void (async () => {
+              await Promise.all(ids.map((id) => api.move(id, previousMailbox)));
+              setThreads((prev) =>
+                setThreadUnread(moveThreadToFolder(prev, threadId, previousFolder), threadId, previousUnread)
+              );
+              const restored = await api.mailboxes();
+              setMailboxes(restored);
+              setCounts(countsFromMailboxes(restored));
+            })().catch((err) => showNotice(messageOf(err)));
+          });
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [threads, selectedThreadId, showNotice]
+    [api, mailboxes, resolveIds, selectedThreadId, showNotice, threads]
   );
 
   const handleRestoreThread = useCallback(
     (threadId: string) => {
-      setThreads((prev) => moveThreadToFolder(prev, threadId, 'inbox'));
-      if (selectedThreadId === threadId) {
-        setSelectedThreadId(null);
-        setDeepReading(false);
-      }
-      showNotice('Restaurado');
+      const target = threads.find((thread) => thread.id === threadId);
+      const inboxId = mailboxes.find((mailbox) => mailbox.folder === 'inbox')?.id;
+      if (!target || !inboxId) return;
+      void (async () => {
+        try {
+          const ids = await resolveIds(target);
+          await Promise.all(ids.map((id) => api.move(id, inboxId)));
+          setThreads((prev) => moveThreadToFolder(prev, threadId, 'inbox'));
+          if (selectedThreadId === threadId) {
+            setSelectedThreadId(null);
+            setDeepReading(false);
+          }
+          const next = await api.mailboxes();
+          setMailboxes(next);
+          setCounts(countsFromMailboxes(next));
+          showNotice('Restaurado');
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [selectedThreadId, showNotice]
+    [api, mailboxes, resolveIds, selectedThreadId, showNotice, threads]
   );
 
-  const handleToggleUnread = useCallback((threadId: string, nextUnread: boolean) => {
-    setThreads((prev) => setThreadUnread(prev, threadId, nextUnread));
-  }, []);
+  const handleToggleUnread = useCallback(
+    (threadId: string, nextUnread: boolean) => {
+      const target = threads.find((thread) => thread.id === threadId);
+      if (!target) return;
+      void (async () => {
+        try {
+          const ids = await resolveIds(target);
+          await Promise.all(ids.map((id) => (nextUnread ? api.markUnread(id) : api.markRead(id))));
+          setThreads((prev) => setThreadUnread(prev, threadId, nextUnread));
+          const next = await api.mailboxes();
+          setMailboxes(next);
+          setCounts(countsFromMailboxes(next));
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
+    },
+    [api, resolveIds, showNotice, threads]
+  );
 
   const handleEmptyTrash = useCallback(() => {
-    const trashCount = threads.filter((t) => t.folder === 'trash').length;
-    if (trashCount === 0) {
+    const trashCount = threads.filter((thread) => thread.folder === 'trash').length;
+    if (trashCount === 0 && counts.trash === 0) {
       showNotice('Papelera vacía');
       return;
     }
-    setThreads((prev) => emptyTrashThreads(prev));
-    if (selectedThread?.folder === 'trash') {
-      setSelectedThreadId(null);
-      setDeepReading(false);
-    }
-    showNotice('Papelera vaciada');
-  }, [threads, selectedThread, showNotice]);
+    void (async () => {
+      try {
+        await api.emptyTrash();
+        setThreads((prev) => emptyTrashThreads(prev));
+        if (selectedThread?.folder === 'trash') {
+          setSelectedThreadId(null);
+          setDeepReading(false);
+        }
+        const next = await api.mailboxes();
+        setMailboxes(next);
+        setCounts(countsFromMailboxes(next));
+        showNotice('Papelera vaciada');
+      } catch (err) {
+        showNotice(messageOf(err));
+      }
+    })();
+  }, [api, counts.trash, selectedThread, showNotice, threads]);
 
   const handleSendEmail = useCallback(
     (payload: ComposePayload) => {
-      const nowIso = new Date().toISOString();
-      setThreads((prev) => sendEmailThread(prev, payload, CURRENT_USER, nowIso).threads);
-      setComposeOpen(false);
-      showNotice(`Enviado a ${payload.to}`);
+      void (async () => {
+        try {
+          await api.send({
+            to: [payload.to],
+            subject: payload.subject.trim() || '(Sin asunto)',
+            html: payload.bodyHtml,
+            text: stripHtmlToSnippet(payload.bodyHtml, 20000),
+            draftId: payload.draftThreadId,
+            attachments: toSendAttachments(payload.attachments),
+          });
+          setComposeOpen(false);
+          showNotice(`Enviado a ${payload.to}`);
+          await reload();
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [showNotice]
+    [api, reload, showNotice]
   );
 
   const handleSaveDraft = useCallback(
     (payload: ComposePayload) => {
-      const nowIso = new Date().toISOString();
-      setThreads((prev) => saveDraftThread(prev, payload, CURRENT_USER, nowIso));
-      showNotice('Borrador guardado');
+      void (async () => {
+        try {
+          await api.saveDraft({
+            id: payload.draftThreadId,
+            to: payload.to.trim() ? [payload.to.trim()] : [],
+            subject: payload.subject.trim(),
+            html: payload.bodyHtml,
+            text: stripHtmlToSnippet(payload.bodyHtml, 20000),
+          });
+          showNotice('Borrador guardado');
+          await reload();
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [showNotice]
+    [api, reload, showNotice]
   );
 
-  const handleDiscardDraft = useCallback((draftThreadId?: string) => {
-    if (!draftThreadId) return;
-    setThreads((prev) => prev.filter((t) => t.id !== draftThreadId));
-  }, []);
+  const handleDiscardDraft = useCallback(
+    (draftThreadId?: string) => {
+      if (!draftThreadId) return;
+      void (async () => {
+        try {
+          await api.deleteDraft(draftThreadId);
+          setThreads((prev) => prev.filter((thread) => thread.id !== draftThreadId && !thread.messageIds?.includes(draftThreadId)));
+          await reload();
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
+    },
+    [api, reload, showNotice]
+  );
 
   const handleSendReply = useCallback(
-    (bodyHtml: string) => {
-      if (!selectedThreadId) return;
-      const nowIso = new Date().toISOString();
-      setThreads((prev) =>
-        appendReplyToThread(prev, selectedThreadId, bodyHtml, CURRENT_USER, nowIso)
-      );
-      showNotice('Enviado');
+    (bodyHtml: string, attachments: ComposeAttachment[] = []) => {
+      if (!selectedThread) return;
+      const last = selectedThread.messages[selectedThread.messages.length - 1];
+      if (!last) return;
+      const to =
+        last.sender.email === user.email ? (last.recipients[0] ?? '') : last.sender.email;
+      if (!to) {
+        showNotice('No hay destinatario para responder');
+        return;
+      }
+      const parent = last.messageIdHeader ? [last.messageIdHeader] : [];
+      const references = [...(last.references ?? []), ...parent];
+      const raw = selectedThread.rawSubject || selectedThread.subject;
+      const subject = /^(re|rv):/i.test(raw.trim()) ? raw : `Re: ${raw}`;
+      void (async () => {
+        try {
+          await api.send({
+            to: [to],
+            subject,
+            html: bodyHtml,
+            text: stripHtmlToSnippet(bodyHtml, 20000),
+            inReplyTo: parent,
+            references,
+            attachments: toSendAttachments(attachments),
+          });
+          const full = detailToThread(await api.thread(selectedThread.id), selectedThread.folder);
+          setThreads((prev) => prev.map((thread) => (thread.id === full.id ? full : thread)));
+          showNotice('Enviado');
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
     },
-    [selectedThreadId, showNotice]
+    [api, selectedThread, showNotice, user.email]
   );
+
+  handleOpenRef.current = handleOpenThread;
 
   const handleForwardSelected = useCallback(() => {
     if (!selectedThread) return;
     const latest = selectedThread.messages[selectedThread.messages.length - 1];
     const forwardedBody = `<p></p><blockquote><p><strong>Reenviado de ${latest.sender.name} (${latest.sender.email}):</strong></p>${latest.bodyHtml}</blockquote>`;
+    const kept = (latest.attachments ?? [])
+      .filter((item) => item.blobId)
+      .map((item) => ({
+        id: item.blobId as string,
+        name: item.name,
+        sizeLabel: item.size,
+        contentType:
+          item.kind === 'pdf'
+            ? 'application/pdf'
+            : item.kind === 'image'
+              ? 'image/jpeg'
+              : 'application/octet-stream',
+        blobId: item.blobId,
+      }));
     openCompose({
       to: '',
       subject: selectedThread.subject.startsWith('Fwd:')
         ? selectedThread.subject
         : `Fwd: ${selectedThread.subject}`,
       bodyHtml: forwardedBody,
+      attachments: kept,
     });
   }, [selectedThread, openCompose]);
+
+  const handleShowRemoteImages = useCallback(
+    (messageId: string) => {
+      void (async () => {
+        try {
+          const html = await api.messageHtml(messageId, true);
+          setThreads((prev) =>
+            prev.map((thread) =>
+              thread.id === selectedRef.current
+                ? {
+                    ...thread,
+                    messages: thread.messages.map((message) =>
+                      message.id === messageId
+                        ? { ...message, bodyHtml: html, remoteImagesBlocked: false, isHtmlRich: true }
+                        : message
+                    ),
+                  }
+                : thread
+            )
+          );
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
+    },
+    [api, showNotice]
+  );
+
+  const handleTrustSender = useCallback(
+    (email: string) => {
+      const current = threads.find((thread) => thread.id === selectedRef.current);
+      if (!current) return;
+      void (async () => {
+        try {
+          await api.trustSender(email);
+          const full = detailToThread(await api.thread(current.id), current.folder);
+          setThreads((prev) => prev.map((thread) => (thread.id === full.id ? full : thread)));
+          showNotice('Remitente de confianza');
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
+    },
+    [api, showNotice, threads]
+  );
+
+  const loadMoreSearch = useCallback(() => {
+    const query = searchQuery.trim();
+    if (!query || !searchCursor) return;
+    void (async () => {
+      try {
+        const mailboxId = mailboxes.find((mailbox) => mailbox.folder === activeFolder)?.id;
+        const page = await api.search(query, mailboxId, searchCursor);
+        setSearchHits((prev) => [
+          ...prev,
+          ...page.threads.map((item) => summaryToThread(item, item.folder || activeFolder)),
+        ]);
+        setSearchCursor(page.cursor);
+      } catch (err) {
+        showNotice(messageOf(err));
+      }
+    })();
+  }, [api, activeFolder, mailboxes, searchCursor, searchQuery, showNotice]);
 
   const toggleTheme = useCallback(() => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }, []);
 
-  // Global keyboard shortcuts (Cmd+K, C, /, J/K list nav, Enter, E archive)
+  const handleLogout = useCallback(() => {
+    void api.logout().then(() => {
+      setAuthed(false);
+      setThreads([]);
+      setSelectedThreadId(null);
+    });
+  }, [api]);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!authed) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setPaletteOpen((prev) => !prev);
@@ -378,6 +815,7 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
+    authed,
     composeOpen,
     paletteOpen,
     selectedThreadId,
@@ -389,7 +827,6 @@ export default function App() {
     handleArchiveThread,
   ]);
 
-  // Build Command Palette actions dynamically
   const commandItems = useMemo<CommandItem[]>(() => {
     const navItems: CommandItem[] = (
       ['inbox', 'sent', 'drafts', 'archive', 'trash'] as FolderId[]
@@ -455,10 +892,17 @@ export default function App() {
       {
         id: 'act-empty-trash',
         label: 'Vaciar papelera',
-        hint: `${folderCounts.trash} en papelera`,
+        hint: `${counts.trash} en papelera`,
         group: 'Acciones',
         keywords: ['vaciar', 'papelera', 'trash', 'limpiar', 'eliminar'],
         run: handleEmptyTrash,
+      },
+      {
+        id: 'act-logout',
+        label: 'Cerrar sesión',
+        group: 'Acciones',
+        keywords: ['salir', 'logout', 'cerrar', 'sesión'],
+        run: handleLogout,
       },
     ];
 
@@ -502,7 +946,7 @@ export default function App() {
     ];
 
     const recentThreads: CommandItem[] = threads
-      .filter((t) => t.folder !== 'trash')
+      .filter((thread) => thread.folder !== 'trash')
       .slice(0, 6)
       .map((thread) => ({
         id: `open-${thread.id}`,
@@ -511,7 +955,7 @@ export default function App() {
         group: 'Hilos',
         keywords: [
           thread.subject,
-          ...thread.messages.map((m) => `${m.sender.name} ${m.sender.email}`),
+          ...thread.messages.map((message) => `${message.sender.name} ${message.sender.email}`),
         ],
         run: () => {
           setActiveFolder(thread.folder);
@@ -524,21 +968,35 @@ export default function App() {
     selectedThread,
     deepReading,
     theme,
-    folderCounts.trash,
+    counts.trash,
     threads,
     handleSelectFolder,
     openCompose,
     toggleTheme,
     handleEmptyTrash,
+    handleLogout,
     handleOpenThread,
   ]);
 
+  if (!ready) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-[var(--canvas-bg)] text-[var(--ink-primary)]">
+        <p className="text-[28px]" style={{ fontFamily: 'var(--font-serif)' }}>
+          DarioMail
+        </p>
+      </div>
+    );
+  }
+
+  if (!authed) {
+    return <LoginScreen pending={authPending} error={authError} onSubmit={handleLogin} />;
+  }
+
   return (
     <div className="h-screen w-screen overflow-hidden flex bg-[var(--canvas-bg)] text-[var(--ink-primary)] transition-colors duration-300">
-      {/* Compact Floating Vertical Dock */}
       <LiquidSidebar
         activeFolder={activeFolder}
-        counts={folderCounts}
+        counts={counts}
         theme={theme}
         mobileOpen={mobileMenuOpen}
         hiddenForDeepReading={deepReading}
@@ -549,7 +1007,6 @@ export default function App() {
         onCloseMobile={() => setMobileMenuOpen(false)}
       />
 
-      {/* Seamless Edge-to-Edge Editorial Canvas */}
       <main
         className={`relative flex-1 min-w-0 h-full overflow-hidden bg-[var(--surface-bg)] transition-[padding] duration-300 ${
           deepReading ? 'pl-0' : 'md:pl-[76px]'
@@ -577,6 +1034,8 @@ export default function App() {
                 setSelectedThreadId(null);
               }}
               onForward={handleForwardSelected}
+              onShowRemoteImages={handleShowRemoteImages}
+              onTrustSender={handleTrustSender}
               onSendReply={handleSendReply}
             />
           ) : (
@@ -586,8 +1045,8 @@ export default function App() {
               threads={visibleThreads}
               searchQuery={searchQuery}
               focusedIndex={focusedIndex}
-              currentUserEmail={CURRENT_USER.email}
-              referenceIso={REFERENCE_NOW_ISO}
+              currentUserEmail={user.email}
+              referenceIso={referenceNow}
               initialScrollTop={feedScrollRef.current}
               searchInputRef={searchInputRef}
               onScrollChange={(scrollTop) => {
@@ -603,11 +1062,12 @@ export default function App() {
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenCompose={() => openCompose()}
               onFocusIndexChange={setFocusedIndex}
+              hasMore={Boolean(searchQuery.trim() && searchCursor)}
+              onLoadMore={loadMoreSearch}
             />
           )}
         </AnimatePresence>
 
-        {/* Quiet Editorial Whisper Notification */}
         <AnimatePresence>
           {notice && (
             <motion.div
@@ -638,7 +1098,6 @@ export default function App() {
         </AnimatePresence>
       </main>
 
-      {/* The Writing Sanctuary Modal (C) */}
       <ComposeModal
         open={composeOpen}
         initial={composeInitial}
@@ -648,10 +1107,11 @@ export default function App() {
         onDiscardDraft={handleDiscardDraft}
       />
 
-      {/* El Cerebro Rápido: Command Palette (Cmd+K / Ctrl+K) */}
       <CommandPalette
         open={paletteOpen}
         commands={commandItems}
+        remoteCommands={paletteRemote}
+        onQueryChange={setPaletteQuery}
         onClose={() => setPaletteOpen(false)}
       />
     </div>

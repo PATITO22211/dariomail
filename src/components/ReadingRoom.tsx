@@ -21,13 +21,15 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { MailMessage, MailThread, ThemeMode } from '../types/mail';
+import type { ComposeAttachment, MailMessage, MailThread, ThemeMode } from '../types/mail';
 import {
   formatFullTimestamp,
   sanitizeEmailHtml,
   stripHtmlToSnippet,
 } from '../utils/mailStore';
 import { useSmoothWheelScroll } from '../utils/smoothScroll';
+import { filesToAttachments } from '../utils/files';
+import { AttachmentChips } from './AttachmentChips';
 import { InvisibleIframe } from './InvisibleIframe';
 import { TipTapFolio } from './TipTapFolio';
 
@@ -43,7 +45,9 @@ interface ReadingRoomProps {
   onRestore: () => void;
   onMarkUnread: () => void;
   onForward: () => void;
-  onSendReply: (bodyHtml: string) => void;
+  onShowRemoteImages: (messageId: string) => void;
+  onTrustSender: (email: string) => void;
+  onSendReply: (bodyHtml: string, attachments: ComposeAttachment[]) => void;
 }
 
 function SenderAvatar({
@@ -99,6 +103,8 @@ export function ReadingRoom({
   onRestore,
   onMarkUnread,
   onForward,
+  onShowRemoteImages,
+  onTrustSender,
   onSendReply,
 }: ReadingRoomProps) {
   const readerScrollRef = useRef<HTMLDivElement | null>(null);
@@ -112,6 +118,9 @@ export function ReadingRoom({
 
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyHtml, setReplyHtml] = useState('');
+  const [replyAttachments, setReplyAttachments] = useState<ComposeAttachment[]>([]);
+  const [replyError, setReplyError] = useState<string | null>(null);
+  const replyFileRef = useRef<HTMLInputElement | null>(null);
 
   useSmoothWheelScroll(readerScrollRef);
 
@@ -171,13 +180,25 @@ export function ReadingRoom({
     setExpandedIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const replyReady = stripHtmlToSnippet(replyHtml, 20).length > 0;
+  const replyReady =
+    stripHtmlToSnippet(replyHtml, 20).length > 0 || replyAttachments.length > 0;
 
   const handleSubmitReply = () => {
     if (!replyReady) return;
-    onSendReply(replyHtml);
+    onSendReply(replyHtml, replyAttachments);
     setReplyHtml('');
+    setReplyAttachments([]);
     setReplyOpen(false);
+  };
+
+  const addReplyFiles = async (files: FileList | File[]) => {
+    try {
+      const next = await filesToAttachments(files);
+      setReplyAttachments((prev) => [...prev, ...next]);
+      setReplyError(null);
+    } catch (err) {
+      setReplyError(err instanceof Error ? err.message : 'No se pudo adjuntar el archivo');
+    }
   };
 
   const participantNames = Array.from(
@@ -529,24 +550,61 @@ export function ReadingRoom({
                           />
                         )}
 
+                        {msg.remoteImagesBlocked && (
+                          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-[12.5px] text-[var(--ink-muted)]">
+                            <span>Imágenes remotas bloqueadas</span>
+                            <button
+                              type="button"
+                              onClick={() => onShowRemoteImages(msg.id)}
+                              className="text-[var(--accent)] hover:underline underline-offset-4 cursor-pointer"
+                            >
+                              Mostrar imágenes
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onTrustSender(msg.sender.email)}
+                              className="text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] cursor-pointer"
+                            >
+                              Siempre de este remitente
+                            </button>
+                          </div>
+                        )}
+
                         {!deepReading && msg.attachments && msg.attachments.length > 0 && (
                           <div className="mt-7 pt-5 border-t border-[var(--hairline)] flex flex-wrap gap-4">
-                            {msg.attachments.map((att) => (
-                              <div
-                                key={att.name}
-                                className="inline-flex items-center gap-2.5 text-[13px] text-[var(--ink-secondary)]"
-                              >
-                                <Paperclip
-                                  className="w-3.5 h-3.5 text-[var(--accent)]"
-                                  strokeWidth={1.65}
-                                />
-                                <span className="text-[var(--ink-primary)]">{att.name}</span>
-                                <span aria-hidden="true">·</span>
-                                <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
-                                  {att.size}
-                                </span>
-                              </div>
-                            ))}
+                            {msg.attachments.map((att) => {
+                              const className =
+                                'inline-flex items-center gap-2.5 text-[13px] text-[var(--ink-secondary)]';
+                              const chip = (
+                                <>
+                                  <Paperclip
+                                    className="w-3.5 h-3.5 text-[var(--accent)]"
+                                    strokeWidth={1.65}
+                                  />
+                                  <span className="text-[var(--ink-primary)]">{att.name}</span>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
+                                    {att.size}
+                                  </span>
+                                </>
+                              );
+                              if (att.blobId) {
+                                return (
+                                  <a
+                                    key={att.blobId}
+                                    href={`/api/blobs/${encodeURIComponent(att.blobId)}?name=${encodeURIComponent(att.name)}`}
+                                    className={className}
+                                  >
+                                    {chip}
+                                  </a>
+                                );
+                              }
+                              return (
+                                <div key={att.name} className={className}>
+                                  {chip}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>
@@ -597,6 +655,17 @@ export function ReadingRoom({
                     exit={{ opacity: 0, y: 4 }}
                     transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                     className="precision-input rounded-2xl p-4 space-y-3"
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      if (event.dataTransfer.files.length > 0) void addReplyFiles(event.dataTransfer.files);
+                    }}
+                    onPasteCapture={(event) => {
+                      if (event.clipboardData.files.length > 0) {
+                        event.preventDefault();
+                        void addReplyFiles(event.clipboardData.files);
+                      }
+                    }}
                   >
                     <TipTapFolio
                       compact
@@ -606,12 +675,42 @@ export function ReadingRoom({
                       onChange={setReplyHtml}
                       onSubmitShortcut={handleSubmitReply}
                     />
+                    {replyError && (
+                      <p className="text-[12.5px] text-[var(--accent)]">{replyError}</p>
+                    )}
+                    <AttachmentChips
+                      items={replyAttachments}
+                      onRemove={(id) =>
+                        setReplyAttachments((prev) => prev.filter((item) => item.id !== id))
+                      }
+                    />
                     <div className="flex items-center justify-between pt-2 border-t border-[var(--hairline)]">
+                      <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => replyFileRef.current?.click()}
+                        aria-label="Adjuntar archivo"
+                        title="Adjuntar"
+                        className="p-2 -ml-1 rounded-full text-[var(--ink-muted)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
+                      >
+                        <Paperclip className="w-4 h-4" strokeWidth={1.65} />
+                      </button>
+                      <input
+                        ref={replyFileRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={(event) => {
+                          if (event.target.files?.length) void addReplyFiles(event.target.files);
+                          event.target.value = '';
+                        }}
+                      />
                       <button
                         type="button"
                         onClick={() => {
                           setReplyOpen(false);
                           setReplyHtml('');
+                          setReplyAttachments([]);
                         }}
                         aria-label="Cerrar respuesta"
                         title="Descartar"
@@ -619,6 +718,7 @@ export function ReadingRoom({
                       >
                         <X className="w-4 h-4" strokeWidth={1.65} />
                       </button>
+                      </div>
 
                       <motion.button
                         type="button"

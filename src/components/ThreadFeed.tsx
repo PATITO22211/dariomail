@@ -39,6 +39,8 @@ interface ThreadFeedProps {
   onOpenMobileMenu: () => void;
   onOpenCompose: () => void;
   onFocusIndexChange: (index: number) => void;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 type InboxFilter = 'all' | 'unread';
@@ -94,6 +96,8 @@ export function ThreadFeed({
   onOpenMobileMenu,
   onOpenCompose,
   onFocusIndexChange,
+  hasMore,
+  onLoadMore,
 }: ThreadFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef<Array<HTMLLIElement | null>>([]);
@@ -604,6 +608,17 @@ export function ThreadFeed({
                     </ul>
                   </div>
                 )}
+              </div>
+            )}
+            {hasMore && onLoadMore && displayedThreads.length > 0 && (
+              <div className="py-8 flex justify-center">
+                <button
+                  type="button"
+                  onClick={onLoadMore}
+                  className="px-4 py-2 rounded-full border border-[var(--hairline-strong)] text-[13px] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] cursor-pointer"
+                >
+                  Más resultados
+                </button>
               </div>
             )}
           </motion.div>

@@ -7,15 +7,30 @@ import { filterCommands } from '../utils/mailStore';
 interface CommandPaletteProps {
   open: boolean;
   commands: CommandItem[];
+  remoteCommands?: CommandItem[];
+  onQueryChange?: (query: string) => void;
   onClose: () => void;
 }
 
-export function CommandPalette({ open, commands, onClose }: CommandPaletteProps) {
+export function CommandPalette({
+  open,
+  commands,
+  remoteCommands = [],
+  onQueryChange,
+  onClose,
+}: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const filtered = useMemo(() => filterCommands(commands, query), [commands, query]);
+  const filtered = useMemo(
+    () => [...filterCommands(commands, query), ...remoteCommands],
+    [commands, query, remoteCommands]
+  );
+
+  useEffect(() => {
+    onQueryChange?.(query);
+  }, [query, onQueryChange]);
 
   useEffect(() => {
     if (open) {

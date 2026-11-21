@@ -1,15 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowUp, Trash2, X } from 'lucide-react';
-import type { ComposePayload } from '../types/mail';
+import { ArrowUp, Paperclip, Trash2, X } from 'lucide-react';
+import type { ComposeAttachment, ComposePayload } from '../types/mail';
 import { isComposeReady, stripHtmlToSnippet } from '../utils/mailStore';
+import { filesToAttachments } from '../utils/files';
 import { TipTapFolio } from './TipTapFolio';
+import { AttachmentChips } from './AttachmentChips';
 
 export interface ComposeInitialState {
   draftThreadId?: string;
   to: string;
   subject: string;
   bodyHtml: string;
+  attachments?: ComposeAttachment[];
 }
 
 interface ComposeModalProps {
@@ -32,18 +35,33 @@ export function ComposeModal({
   const [to, setTo] = useState(initial.to);
   const [subject, setSubject] = useState(initial.subject);
   const [bodyHtml, setBodyHtml] = useState(initial.bodyHtml);
+  const [attachments, setAttachments] = useState<ComposeAttachment[]>(initial.attachments ?? []);
+  const [dragging, setDragging] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [editorMountKey, setEditorMountKey] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (open) {
       setTo(initial.to);
       setSubject(initial.subject);
       setBodyHtml(initial.bodyHtml);
+      setAttachments(initial.attachments ?? []);
+      setDragging(false);
       setValidationError(null);
       setEditorMountKey((k) => k + 1);
     }
   }, [open, initial]);
+
+  const addFiles = async (files: FileList | File[]) => {
+    try {
+      const next = await filesToAttachments(files);
+      setAttachments((prev) => [...prev, ...next]);
+      setValidationError(null);
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : 'No se pudo adjuntar el archivo');
+    }
+  };
 
   const readyToSend = isComposeReady(to, subject, bodyHtml);
   const hasAnyDraftContent =
@@ -90,6 +108,7 @@ export function ComposeModal({
       to: to.trim(),
       subject: subject.trim(),
       bodyHtml,
+      attachments,
     });
   };
 
@@ -120,7 +139,28 @@ export function ComposeModal({
             exit={{ opacity: 0, y: 12, scale: 0.965 }}
             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             className="relative z-10 w-full max-w-[680px] rounded-3xl floating-monolith overflow-hidden flex flex-col max-h-[86vh]"
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragging(false);
+              if (event.dataTransfer.files.length > 0) void addFiles(event.dataTransfer.files);
+            }}
+            onPasteCapture={(event) => {
+              if (event.clipboardData.files.length > 0) {
+                event.preventDefault();
+                void addFiles(event.clipboardData.files);
+              }
+            }}
           >
+            {dragging && (
+              <div className="pointer-events-none absolute inset-3 z-20 rounded-2xl border border-dashed border-[var(--accent)] bg-[var(--accent-soft)] flex items-center justify-center text-[14px] text-[var(--accent)]">
+                Suelta los archivos
+              </div>
+            )}
             {/* Editorial Serif Header */}
             <div className="flex items-center justify-between px-7 pt-6 pb-3">
               <h2
@@ -201,6 +241,15 @@ export function ComposeModal({
               </div>
             </div>
 
+            {attachments.length > 0 && (
+              <div className="px-7 pb-2">
+                <AttachmentChips
+                  items={attachments}
+                  onRemove={(id) => setAttachments((prev) => prev.filter((item) => item.id !== id))}
+                />
+              </div>
+            )}
+
             {/* Validation feedback */}
             {validationError && (
               <div className="px-7 pb-2 text-[12.5px] text-[var(--accent)]">
@@ -210,6 +259,26 @@ export function ComposeModal({
 
             {/* Quiet Footer with Burgundy Ready-to-Send CTA */}
             <div className="px-7 py-4 border-t border-[var(--hairline)] flex items-center justify-between gap-4">
+              <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                aria-label="Adjuntar archivo"
+                title="Adjuntar"
+                className="p-2 -ml-1 rounded-full text-[var(--ink-muted)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
+              >
+                <Paperclip className="w-4 h-4" strokeWidth={1.65} />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files?.length) void addFiles(event.target.files);
+                  event.target.value = '';
+                }}
+              />
               <button
                 type="button"
                 onClick={() => {
@@ -222,6 +291,7 @@ export function ComposeModal({
               >
                 <Trash2 className="w-4 h-4" strokeWidth={1.65} />
               </button>
+              </div>
 
               <motion.button
                 type="button"
