@@ -1,0 +1,14 @@
+[Unit]
+Description=DarioMail
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dariomail
+EnvironmentFile=%h/.config/dariomail/env
+ExecStart=%h/dariomail/server/target/release/dariomail
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
