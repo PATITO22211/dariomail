@@ -1,8 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DarioMail">
   <rect width="512" height="512" fill="#12100e"/>
-  <g transform="translate(56 56) scale(0.78)">
-    <rect x="136" y="176" width="240" height="168" rx="8" fill="none" stroke="#F4EFE6" stroke-width="28"/>
-    <path d="M136 176 L256 292 L376 176" fill="none" stroke="#F4EFE6" stroke-width="28" stroke-linejoin="miter" stroke-linecap="square"/>
-    <rect x="232" y="296" width="48" height="8" fill="#6B2222"/>
+  <g transform="translate(256 256) scale(0.8) translate(-256 -256)">
+    <defs>
+      <clipPath id="envelope-interior-maskable">
+        <rect x="108" y="172" width="296" height="218" rx="2"/>
+      </clipPath>
+    </defs>
+    <rect
+      x="70"
+      y="108"
+      width="372"
+      height="296"
+      rx="16"
+      fill="none"
+      stroke="#F4EFE6"
+      stroke-width="26"
+      stroke-linejoin="round"
+    />
+    <path
+      clip-path="url(#envelope-interior-maskable)"
+      d="M 108 172 L 256 284 L 404 172"
+      fill="none"
+      stroke="#F4EFE6"
+      stroke-width="26"
+      stroke-linecap="butt"
+      stroke-linejoin="miter"
+      stroke-miterlimit="3"
+    />
+    <rect x="242" y="324" width="28" height="28" rx="3" fill="#6B2222"/>
   </g>
 </svg>
