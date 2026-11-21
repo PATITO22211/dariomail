@@ -441,7 +441,9 @@ mod tests {
         assert_eq!(calls[0][1]["destroy"][0], "draft-1");
         // RFC 8621: con partId no se manda charset (Stalwart lo rechaza con invalidProperties).
         for key in ["htmlBody", "textBody"] {
-            assert!(calls[0][1]["create"]["msg"][key][0].get("charset").is_none());
+            assert!(calls[0][1]["create"]["msg"][key][0]
+                .get("charset")
+                .is_none());
         }
         assert_eq!(calls[1][0], "EmailSubmission/set");
         assert_eq!(calls[1][1]["create"]["sub"]["identityId"], "ident-1");
