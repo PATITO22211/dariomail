@@ -4,6 +4,7 @@ import type {
   CommandItem,
   ComposeAttachment,
   ComposePayload,
+  FeedLoadState,
   FolderId,
   MailThread,
   ThemeMode,
@@ -75,6 +76,38 @@ interface WhisperNotice {
   undo?: () => void;
 }
 
+type FolderFetch =
+  | { kind: 'ok'; folder: FolderId; threads: MailThread[] }
+  | { kind: 'skip'; folder: FolderId }
+  | { kind: 'fail'; folder: FolderId; message: string };
+
+const FOLDER_ORDER: FolderId[] = ['inbox', 'sent', 'drafts', 'archive', 'trash'];
+
+async function fetchFolderThreads(
+  api: MailApi,
+  mailboxes: MailboxInfo[],
+  isStale: () => boolean
+): Promise<FolderFetch[]> {
+  return Promise.all(
+    FOLDER_ORDER.map(async (folder): Promise<FolderFetch> => {
+      if (isStale()) return { kind: 'skip', folder };
+      const mailboxId = mailboxes.find((mailbox) => mailbox.folder === folder)?.id;
+      if (!mailboxId) return { kind: 'skip', folder };
+      try {
+        const page = await api.threads(mailboxId, 40);
+        if (isStale()) return { kind: 'skip', folder };
+        return {
+          kind: 'ok',
+          folder,
+          threads: page.threads.map((thread) => summaryToThread(thread, folder)),
+        };
+      } catch (err) {
+        return { kind: 'fail', folder, message: messageOf(err) };
+      }
+    })
+  );
+}
+
 export default function App() {
   const apiRef = useRef<MailApi | null>(null);
   if (!apiRef.current) apiRef.current = createMailApi();
@@ -87,6 +120,13 @@ export default function App() {
   const [user, setUser] = useState({ email: '', name: '' });
   const [mailboxes, setMailboxes] = useState<MailboxInfo[]>([]);
   const [threads, setThreads] = useState<MailThread[]>([]);
+  const [feedLoad, setFeedLoad] = useState<{
+    state: FeedLoadState;
+    error: string | null;
+    loadedOnce: boolean;
+  }>({ state: 'idle', error: null, loadedOnce: false });
+  const [searchLoadState, setSearchLoadState] = useState<FeedLoadState>('idle');
+  const [searchLoadError, setSearchLoadError] = useState<string | null>(null);
   const [counts, setCounts] = useState<Record<FolderId, number>>({
     inbox: 0,
     sent: 0,
@@ -148,37 +188,132 @@ export default function App() {
     noticeTimerRef.current = window.setTimeout(() => setNotice(null), 3400);
   }, []);
 
-  const reload = useCallback(async () => {
-    const gen = ++loadGen.current;
-    const nextMailboxes = await api.mailboxes();
-    if (gen !== loadGen.current) return;
-    setMailboxes(nextMailboxes);
-    setCounts(countsFromMailboxes(nextMailboxes));
-    const folders: FolderId[] = ['inbox', 'sent', 'drafts', 'archive', 'trash'];
-    const groups = await Promise.all(
-      folders.map(async (folder) => {
-        const mailboxId = nextMailboxes.find((mailbox) => mailbox.folder === folder)?.id;
-        if (!mailboxId) return [];
-        const page = await api.threads(mailboxId, 40);
-        return page.threads.map((thread) => summaryToThread(thread, folder));
-      })
-    );
-    if (gen !== loadGen.current) return;
-    const incoming = groups.flat();
-    setThreads((prev) =>
-      incoming.map((item) => {
-        const previous = prev.find((thread) => thread.id === item.id);
-        const keepDetail =
-          previous &&
-          previous.id === selectedRef.current &&
-          previous.messages.some((message) => message.bodyHtml && !message.id.endsWith('-preview'));
-        if (keepDetail && previous) {
-          return { ...previous, unread: item.unread, folder: item.folder, subject: item.subject };
+  const mergeIncomingThread = useCallback((prev: MailThread[], item: MailThread): MailThread => {
+    const previous = prev.find((thread) => thread.id === item.id);
+    const keepDetail =
+      previous &&
+      previous.id === selectedRef.current &&
+      previous.messages.some((message) => message.bodyHtml && !message.id.endsWith('-preview'));
+    if (keepDetail && previous) {
+      return { ...previous, unread: item.unread, folder: item.folder, subject: item.subject };
+    }
+    return item;
+  }, []);
+
+  const applyFolderFetchResults = useCallback(
+    (prev: MailThread[], results: FolderFetch[]): MailThread[] => {
+      const next = new Map<string, MailThread>();
+      for (const thread of prev) next.set(thread.id, thread);
+
+      for (const result of results) {
+        if (result.kind !== 'ok') continue;
+        for (const [id, thread] of [...next.entries()]) {
+          if (thread.folder === result.folder) next.delete(id);
         }
-        return item;
-      })
-    );
-  }, [api]);
+        for (const thread of result.threads) {
+          next.set(thread.id, mergeIncomingThread(prev, thread));
+        }
+      }
+
+      return [...next.values()].sort(
+        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      );
+    },
+    [mergeIncomingThread]
+  );
+
+  const reload = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      const gen = ++loadGen.current;
+      const isStale = () => gen !== loadGen.current;
+
+      setFeedLoad((prev) => ({
+        loadedOnce: prev.loadedOnce,
+        error: opts?.silent ? prev.error : null,
+        state: prev.loadedOnce && opts?.silent ? prev.state : 'loading',
+      }));
+
+      try {
+        let nextMailboxes = await api.mailboxes();
+        if (isStale()) return;
+
+        setMailboxes(nextMailboxes);
+        setCounts(countsFromMailboxes(nextMailboxes));
+
+        let results = await fetchFolderThreads(api, nextMailboxes, isStale);
+        if (isStale()) return;
+
+        const skippedWithMailboxes =
+          results.some((result) => result.kind === 'skip') && nextMailboxes.length > 0;
+        if (skippedWithMailboxes) {
+          await new Promise((resolve) => window.setTimeout(resolve, 420));
+          if (!isStale()) {
+            nextMailboxes = await api.mailboxes();
+            if (!isStale()) {
+              setMailboxes(nextMailboxes);
+              setCounts(countsFromMailboxes(nextMailboxes));
+              results = await fetchFolderThreads(api, nextMailboxes, isStale);
+            }
+          }
+        }
+        if (isStale()) return;
+
+        const okResults = results.filter((result) => result.kind === 'ok');
+        const failResults = results.filter((result) => result.kind === 'fail');
+        const inboxMailbox = nextMailboxes.find((mailbox) => mailbox.folder === 'inbox');
+        const inboxResult = results.find((result) => result.folder === 'inbox');
+
+        setThreads((prev) => {
+          const merged = applyFolderFetchResults(prev, results);
+          if (merged.length === 0 && prev.length > 0 && okResults.length === 0) {
+            return prev;
+          }
+          return merged;
+        });
+
+        const inboxThreadsMissing =
+          inboxMailbox &&
+          inboxMailbox.totalEmails > 0 &&
+          inboxResult?.kind !== 'ok' &&
+          okResults.every((result) => result.folder !== 'inbox');
+
+        if (failResults.length > 0 && okResults.length === 0) {
+          setFeedLoad({
+            state: 'error',
+            error: failResults[0]?.message ?? 'No se pudieron cargar los mensajes',
+            loadedOnce: false,
+          });
+          return;
+        }
+
+        if (inboxThreadsMissing && okResults.length === 0) {
+          setFeedLoad({
+            state: 'error',
+            error: 'La bandeja no respondió a tiempo. Reintenta en un momento.',
+            loadedOnce: false,
+          });
+          return;
+        }
+
+        setFeedLoad({
+          state: 'ready',
+          error: null,
+          loadedOnce: true,
+        });
+      } catch (err) {
+        if (isStale()) return;
+        setFeedLoad((prev) => ({
+          state: prev.loadedOnce ? 'ready' : 'error',
+          error: messageOf(err),
+          loadedOnce: prev.loadedOnce,
+        }));
+        if (opts?.silent) {
+          showNotice(messageOf(err));
+        }
+      }
+    },
+    [api, applyFolderFetchResults, showNotice]
+  );
 
   useEffect(() => {
     let cancel = false;
@@ -203,8 +338,8 @@ export default function App() {
 
   useEffect(() => {
     if (!authed) return;
-    void reload().catch((err) => showNotice(messageOf(err)));
-  }, [authed, reload, showNotice]);
+    void reload();
+  }, [authed, reload]);
 
   useEffect(() => {
     if (!authed) return;
@@ -216,7 +351,7 @@ export default function App() {
     const kick = () => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        void reload().catch(() => undefined);
+        void reload({ silent: true });
       }, 500);
     };
     source.addEventListener('state', kick);
@@ -224,6 +359,28 @@ export default function App() {
     return () => {
       window.clearTimeout(timer);
       source.close();
+    };
+  }, [authed, reload]);
+
+  useEffect(() => {
+    if (!authed) return;
+    let resumeTimer = 0;
+    const resume = () => {
+      window.clearTimeout(resumeTimer);
+      resumeTimer = window.setTimeout(() => {
+        void reload({ silent: true });
+      }, 200);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') resume();
+    };
+    const onPageShow = () => resume();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pageshow', onPageShow);
+    return () => {
+      window.clearTimeout(resumeTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pageshow', onPageShow);
     };
   }, [authed, reload]);
 
@@ -237,10 +394,14 @@ export default function App() {
     if (!authed || !query) {
       setSearchHits([]);
       setSearchCursor(null);
+      setSearchLoadState('idle');
+      setSearchLoadError(null);
       return;
     }
     let cancel = false;
     const timer = window.setTimeout(() => {
+      setSearchLoadState('loading');
+      setSearchLoadError(null);
       void (async () => {
         try {
           const mailboxId = mailboxes.find((mailbox) => mailbox.folder === activeFolder)?.id;
@@ -248,8 +409,12 @@ export default function App() {
           if (cancel) return;
           setSearchHits(page.threads.map((item) => summaryToThread(item, item.folder || activeFolder)));
           setSearchCursor(page.cursor);
+          setSearchLoadState('ready');
         } catch (err) {
-          if (!cancel) showNotice(messageOf(err));
+          if (!cancel) {
+            setSearchLoadState('error');
+            setSearchLoadError(messageOf(err));
+          }
         }
       })();
     }, 280);
@@ -257,7 +422,7 @@ export default function App() {
       cancel = true;
       window.clearTimeout(timer);
     };
-  }, [searchQuery, activeFolder, authed, api, mailboxes, showNotice]);
+  }, [searchQuery, activeFolder, authed, api, mailboxes]);
 
   useEffect(() => {
     const query = paletteQuery.trim();
@@ -1057,6 +1222,17 @@ export default function App() {
               key={`feed-${activeFolder}`}
               folder={activeFolder}
               threads={visibleThreads}
+              feedLoadState={feedLoad.state}
+              feedLoadError={feedLoad.error}
+              feedLoadedOnce={feedLoad.loadedOnce}
+              searchLoadState={searchLoadState}
+              searchLoadError={searchLoadError}
+              onRetryLoad={() => {
+                void reload();
+              }}
+              onPullRefresh={async () => {
+                await reload({ silent: true });
+              }}
               searchQuery={searchQuery}
               focusedIndex={focusedIndex}
               currentUserEmail={user.email}

@@ -2,6 +2,8 @@ export type FolderId = 'inbox' | 'sent' | 'drafts' | 'archive' | 'trash';
 
 export type ThemeMode = 'dark' | 'light';
 
+export type FeedLoadState = 'idle' | 'loading' | 'ready' | 'error';
+
 export interface Participant {
   name: string;
   email: string;
