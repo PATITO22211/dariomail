@@ -72,6 +72,9 @@ pub struct ThreadSummary {
     pub count: usize,
     pub unread: bool,
     pub message_ids: Vec<String>,
+    #[serde(skip_serializing)]
+    pub mailbox_ids: Vec<String>,
+    pub folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +98,7 @@ pub struct ApiMessage {
     pub message_id_header: Option<String>,
     pub references: Vec<String>,
     pub attachments: Vec<Attachment>,
+    pub remote_images_blocked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -286,6 +290,8 @@ pub fn assemble_thread_page(
             count: message_ids.len(),
             unread,
             message_ids,
+            mailbox_ids: newest.mailbox_ids.clone(),
+            folder: None,
         });
     }
     let cursor = if query_ids.len() >= limit && !query_ids.is_empty() {
@@ -302,7 +308,7 @@ pub fn assemble_thread_page(
 pub fn build_thread_detail(
     thread: &ThreadEmails,
     emails: &[EmailRecord],
-    allow_remote_images: bool,
+    trusted: &std::collections::HashSet<String>,
 ) -> Result<ThreadDetail, ApiError> {
     let mut ordered: Vec<&EmailRecord> = thread
         .email_ids
@@ -316,7 +322,14 @@ pub fn build_thread_detail(
     let newest = ordered[ordered.len() - 1];
     let messages = ordered
         .iter()
-        .map(|email| message_from_email(email, allow_remote_images))
+        .map(|email| {
+            let sender = email
+                .from
+                .first()
+                .map(|person| person.email.to_ascii_lowercase())
+                .unwrap_or_default();
+            message_from_email(email, trusted.contains(&sender))
+        })
         .collect::<Vec<_>>();
     Ok(ThreadDetail {
         id: thread.id.clone(),
@@ -431,6 +444,8 @@ pub fn created_id(payload: &Value, key: &str) -> Option<String> {
 }
 
 fn message_from_email(email: &EmailRecord, allow_remote_images: bool) -> ApiMessage {
+    let remote_images_blocked =
+        !allow_remote_images && crate::sanitize::contains_remote_images(&email.html);
     let body_html = message_html(email, allow_remote_images);
     let plain = if email.preview.is_empty() {
         html_to_text(&body_html)
@@ -454,6 +469,7 @@ fn message_from_email(email: &EmailRecord, allow_remote_images: bool) -> ApiMess
         message_id_header: email.message_ids.first().cloned(),
         references: email.references.clone(),
         attachments: email.attachments.clone(),
+        remote_images_blocked,
     }
 }
 
@@ -800,7 +816,8 @@ mod tests {
             html: "<p>Hola</p><img src=\"https://x.test/a.png\"><script>x</script>".into(),
             text: "Hola".into(),
         };
-        let detail = build_thread_detail(&thread, &[email], false).unwrap();
+        let detail =
+            build_thread_detail(&thread, &[email], &std::collections::HashSet::new()).unwrap();
         assert_eq!(detail.subject, "Nota");
         assert_eq!(
             detail.messages[0].message_id_header.as_deref(),
@@ -808,6 +825,7 @@ mod tests {
         );
         assert!(!detail.messages[0].body_html.contains("script"));
         assert!(!detail.messages[0].body_html.contains("https://x.test"));
+        assert!(detail.messages[0].remote_images_blocked);
         assert!(detail.messages[0].body_html.contains("Hola"));
         assert_eq!(detail.messages[0].attachments[0].blob_id, "blob-1");
     }

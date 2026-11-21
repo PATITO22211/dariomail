@@ -40,6 +40,8 @@ printf '%s' 'tu clave de la web' | ~/dariomail/server/target/release/dariomail h
 
 Copia el hash completo a `DARIOMAIL_LOGIN_PASSWORD_HASH`. En sdd deja `DARIOMAIL_COOKIE_SECURE=true`. Si pruebas el Vite local por HTTP, ponlo en `false` solo en esa máquina.
 
+`DARIOMAIL_TRUSTED_SENDERS_PATH` apunta a un JSON con los correos que pueden mostrar imágenes remotas. Si no existe, el servidor lo crea al marcar un remitente.
+
 ## Servicio de usuario
 
 ```bash

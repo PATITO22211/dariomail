@@ -10,6 +10,7 @@ pub struct Config {
     pub secret: String,
     pub password_hash: String,
     pub cookie_secure: bool,
+    pub trusted_senders_path: String,
 }
 
 impl Config {
@@ -31,6 +32,10 @@ impl Config {
             secret: require("DARIOMAIL_SECRET")?,
             password_hash: require("DARIOMAIL_LOGIN_PASSWORD_HASH")?,
             cookie_secure: env_or("DARIOMAIL_COOKIE_SECURE", "true") != "false",
+            trusted_senders_path: env_or(
+                "DARIOMAIL_TRUSTED_SENDERS_PATH",
+                "data/trusted-senders.json",
+            ),
         })
     }
 }

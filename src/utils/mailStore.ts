@@ -388,7 +388,7 @@ export function getThreadDisplaySender(thread: MailThread, currentUserEmail: str
   return uniqueNames.join(', ');
 }
 
-export { createMailApi, ApiError, summaryToThread, detailToThread } from './mailApi';
+export { createMailApi, ApiError, summaryToThread, detailToThread, toSendAttachments } from './mailApi';
 export type { MailApi, MailboxInfo, SendInput, ThreadDetail, ThreadSummary } from './mailApi';
 
 export function filterCommands(commands: CommandItem[], query: string): CommandItem[] {

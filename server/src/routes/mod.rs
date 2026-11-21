@@ -16,14 +16,17 @@ use serde_json::{json, Value};
 use crate::auth::{self, LoginLimiter};
 use crate::config::Config;
 use crate::error::ApiError;
+use crate::jmap::OutboundAttachment;
 use crate::jmap::{display_name, valid_blob_id, JmapClient, OutboundMail};
 use crate::sanitize::html_to_text;
+use crate::trust::TrustedSenders;
 
 #[derive(Clone)]
 pub struct AppState {
     pub cfg: Arc<Config>,
     pub jmap: Arc<JmapClient>,
     pub limiter: Arc<LoginLimiter>,
+    pub trust: Arc<TrustedSenders>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -34,6 +37,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mailboxes", get(mailboxes))
         .route("/api/threads", get(threads))
         .route("/api/threads/:id", get(thread))
+        .route("/api/search", get(search))
+        .route("/api/senders/trust", post(trust_sender))
         .route("/api/messages/:id/html", get(message_html))
         .route("/api/messages/:id/read", post(mark_read))
         .route("/api/messages/:id/unread", post(mark_unread))
@@ -84,8 +89,27 @@ struct AttachmentIn {
     filename: String,
     #[serde(rename = "contentType", default = "default_octet")]
     content_type: String,
-    #[serde(rename = "dataBase64")]
-    data_base64: String,
+    #[serde(default, rename = "dataBase64")]
+    data_base64: Option<String>,
+    #[serde(default, rename = "blobId")]
+    blob_id: Option<String>,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct SearchParams {
+    q: String,
+    #[serde(default, rename = "mailboxId")]
+    mailbox_id: Option<String>,
+    cursor: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: u64,
+}
+
+#[derive(Deserialize)]
+struct TrustBody {
+    email: String,
 }
 
 fn default_octet() -> String {
@@ -212,7 +236,37 @@ async fn thread(
     Path(id): Path<String>,
 ) -> Result<Json<crate::jmap::ThreadDetail>, ApiError> {
     auth::require_session(&state.cfg.secret, &headers)?;
-    Ok(Json(state.jmap.thread(&id).await?))
+    Ok(Json(state.jmap.thread(&id, &state.trust.snapshot()).await?))
+}
+
+async fn search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SearchParams>,
+) -> Result<Json<ThreadPageJson>, ApiError> {
+    auth::require_session(&state.cfg.secret, &headers)?;
+    let page = state
+        .jmap
+        .search_page(
+            query.mailbox_id.as_deref(),
+            &query.q,
+            query.limit,
+            query.cursor.as_deref(),
+        )
+        .await?;
+    Ok(Json(ThreadPageJson(page)))
+}
+
+async fn trust_sender(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<TrustBody>,
+) -> Result<Json<Value>, ApiError> {
+    auth::require_session(&state.cfg.secret, &headers)?;
+    state.trust.trust(&body.email)?;
+    Ok(Json(
+        json!({ "ok": true, "email": body.email.trim().to_ascii_lowercase() }),
+    ))
 }
 
 async fn message_html(
@@ -226,7 +280,10 @@ async fn message_html(
         query.allow_images.as_deref(),
         Some("1") | Some("true") | Some("yes")
     );
-    let html = state.jmap.message_html(&id, allow).await?;
+    let html = state
+        .jmap
+        .message_html(&id, allow, &state.trust.snapshot())
+        .await?;
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "text/html; charset=utf-8")
@@ -304,18 +361,7 @@ async fn send_message(
     }
     let mut attachments = Vec::new();
     for incoming in body.attachments {
-        let bytes = STANDARD
-            .decode(incoming.data_base64.trim())
-            .map_err(|_| ApiError::BadRequest("Adjunto en base64 no válido".into()))?;
-        if bytes.len() > 15 * 1024 * 1024 {
-            return Err(ApiError::BadRequest("El adjunto supera el límite".into()));
-        }
-        let mut uploaded = state
-            .jmap
-            .upload_blob(bytes, &incoming.content_type)
-            .await?;
-        uploaded.name = sanitize_filename(&incoming.filename);
-        attachments.push(uploaded);
+        attachments.push(prepare_attachment(&state, incoming).await?);
     }
     let text = if body.text.trim().is_empty() {
         html_to_text(&body.html)
@@ -466,6 +512,41 @@ fn no_store(status: StatusCode, body: Value, cookie: Option<String>) -> Response
     response
         .body(Body::from(body.to_string()))
         .unwrap_or_else(|_| Response::new(Body::from("{}")))
+}
+
+async fn prepare_attachment(
+    state: &AppState,
+    incoming: AttachmentIn,
+) -> Result<OutboundAttachment, ApiError> {
+    let name = sanitize_filename(&incoming.filename);
+    if let Some(blob_id) = incoming.blob_id.as_deref() {
+        if !valid_blob_id(blob_id) {
+            return Err(ApiError::BadRequest(
+                "Identificador de adjunto no válido".into(),
+            ));
+        }
+        return Ok(OutboundAttachment {
+            blob_id: blob_id.to_string(),
+            name,
+            content_type: incoming.content_type,
+            size: incoming.size.unwrap_or(0),
+        });
+    }
+    let encoded = incoming
+        .data_base64
+        .ok_or_else(|| ApiError::BadRequest("Adjunto incompleto".into()))?;
+    let bytes = STANDARD
+        .decode(encoded.trim())
+        .map_err(|_| ApiError::BadRequest("Adjunto en base64 no válido".into()))?;
+    if bytes.len() > 15 * 1024 * 1024 {
+        return Err(ApiError::BadRequest("El adjunto supera el límite".into()));
+    }
+    let mut uploaded = state
+        .jmap
+        .upload_blob(bytes, &incoming.content_type)
+        .await?;
+    uploaded.name = name;
+    Ok(uploaded)
 }
 
 fn parse_people(values: &[String]) -> Result<Vec<(String, String)>, ApiError> {

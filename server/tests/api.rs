@@ -10,6 +10,7 @@ use dariomail::auth::LoginLimiter;
 use dariomail::config::Config;
 use dariomail::jmap::JmapClient;
 use dariomail::routes::AppState;
+use dariomail::trust::TrustedSenders;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -52,6 +53,10 @@ async fn session_urls_threads_html_and_send() {
         secret: "secreto-de-prueba-muy-largo".into(),
         password_hash: hash,
         cookie_secure: false,
+        trusted_senders_path: std::env::temp_dir()
+            .join(format!("dariomail-trust-test-{}.json", std::process::id()))
+            .display()
+            .to_string(),
     };
     let state = AppState {
         jmap: std::sync::Arc::new(
@@ -62,8 +67,9 @@ async fn session_urls_threads_html_and_send() {
             )
             .unwrap(),
         ),
-        cfg: std::sync::Arc::new(cfg),
+        cfg: std::sync::Arc::new(cfg.clone()),
         limiter: std::sync::Arc::new(LoginLimiter::default()),
+        trust: std::sync::Arc::new(TrustedSenders::load(&cfg.trusted_senders_path).unwrap()),
     };
     let app = dariomail::router(state);
 
@@ -178,6 +184,16 @@ async fn session_urls_threads_html_and_send() {
     .unwrap();
     assert!(html_images_text.contains("https://evil.test/a.png"));
 
+    let found = app
+        .clone()
+        .oneshot(authed("GET", "/api/search?q=prensa", None, &cookie))
+        .await
+        .unwrap();
+    assert_eq!(found.status(), StatusCode::OK);
+    let found_json = read_json(found).await;
+    assert_eq!(found_json["threads"][0]["subject"], "Monografía");
+    assert_eq!(found_json["threads"][0]["folder"], "inbox");
+
     let send = app
         .clone()
         .oneshot(authed(
@@ -203,6 +219,16 @@ async fn session_urls_threads_html_and_send() {
     assert!(submission.contains("<m1@example.com>"));
     assert!(submission.contains("ident-dario"));
     assert!(recorded.iter().all(|body| !body.contains("app-secret")));
+    let search_body = recorded
+        .iter()
+        .find(|body| body.contains("prensa"))
+        .expect("búsqueda");
+    for field in ["\"text\"", "\"from\"", "\"to\"", "\"subject\"", "\"body\""] {
+        assert!(
+            search_body.contains(field),
+            "{field} ausente en {search_body}"
+        );
+    }
 }
 
 fn authed(method: &str, uri: &str, body: Option<&str>, cookie: &str) -> Request<Body> {

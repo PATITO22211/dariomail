@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import type {
   CommandItem,
+  ComposeAttachment,
   ComposePayload,
   FolderId,
   MailThread,
@@ -18,8 +19,10 @@ import {
   setThreadUnread,
   stripHtmlToSnippet,
   summaryToThread,
+  toSendAttachments,
   type MailApi,
   type MailboxInfo,
+  type ThreadSummary,
 } from './utils/mailStore';
 import { LiquidSidebar } from './components/LiquidSidebar';
 import { ThreadFeed } from './components/ThreadFeed';
@@ -96,6 +99,10 @@ export default function App() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [deepReading, setDeepReading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchHits, setSearchHits] = useState<MailThread[]>([]);
+  const [searchCursor, setSearchCursor] = useState<string | null>(null);
+  const [paletteQuery, setPaletteQuery] = useState('');
+  const [paletteRemote, setPaletteRemote] = useState<CommandItem[]>([]);
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [referenceNow] = useState(() => new Date().toISOString());
@@ -220,10 +227,70 @@ export default function App() {
     };
   }, [authed, reload]);
 
-  const visibleThreads = useMemo(
-    () => filterThreadsForFolder(threads, activeFolder, searchQuery),
-    [threads, activeFolder, searchQuery]
-  );
+  const visibleThreads = useMemo(() => {
+    if (searchQuery.trim()) return searchHits;
+    return filterThreadsForFolder(threads, activeFolder, '');
+  }, [searchHits, searchQuery, threads, activeFolder]);
+
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (!authed || !query) {
+      setSearchHits([]);
+      setSearchCursor(null);
+      return;
+    }
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const mailboxId = mailboxes.find((mailbox) => mailbox.folder === activeFolder)?.id;
+          const page = await api.search(query, mailboxId);
+          if (cancel) return;
+          setSearchHits(page.threads.map((item) => summaryToThread(item, item.folder || activeFolder)));
+          setSearchCursor(page.cursor);
+        } catch (err) {
+          if (!cancel) showNotice(messageOf(err));
+        }
+      })();
+    }, 280);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [searchQuery, activeFolder, authed, api, mailboxes, showNotice]);
+
+  useEffect(() => {
+    const query = paletteQuery.trim();
+    if (!paletteOpen || query.length < 2) {
+      setPaletteRemote([]);
+      return;
+    }
+    let cancel = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const page = await api.search(query);
+          if (cancel) return;
+          setPaletteRemote(
+            page.threads.map((item) => ({
+              id: `find-${item.id}`,
+              label: item.subject,
+              hint: item.sender.name,
+              group: 'Hilos' as const,
+              keywords: [query],
+              run: () => openFoundThread(item),
+            }))
+          );
+        } catch {
+          if (!cancel) setPaletteRemote([]);
+        }
+      })();
+    }, 280);
+    return () => {
+      cancel = true;
+      window.clearTimeout(timer);
+    };
+  }, [paletteQuery, paletteOpen, api]);
 
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
@@ -236,12 +303,25 @@ export default function App() {
     }
   }, [visibleThreads.length, focusedIndex]);
 
+  const openFoundThread = useCallback(
+    (item: ThreadSummary) => {
+      const folder = item.folder || 'inbox';
+      setActiveFolder(folder);
+      setSearchQuery('');
+      handleOpenRef.current(summaryToThread(item, folder));
+    },
+    []
+  );
+
+  const handleOpenRef = useRef<(thread: MailThread) => void>(() => undefined);
+
   const openCompose = useCallback((preset?: Partial<ComposeInitialState>) => {
     setComposeInitial({
       draftThreadId: preset?.draftThreadId,
       to: preset?.to ?? '',
       subject: preset?.subject ?? '',
       bodyHtml: preset?.bodyHtml ?? '',
+      attachments: preset?.attachments,
     });
     setComposeOpen(true);
   }, []);
@@ -301,7 +381,11 @@ export default function App() {
             });
             return;
           }
-          setThreads((prev) => prev.map((item) => (item.id === thread.id ? full : item)));
+          setThreads((prev) => {
+            const exists = prev.some((item) => item.id === thread.id);
+            if (!exists) return [full, ...prev];
+            return prev.map((item) => (item.id === thread.id ? full : item));
+          });
           setSelectedThreadId(thread.id);
           const unreadIds = full.messages.filter((message) => message.unread).map((message) => message.id);
           if (unreadIds.length) {
@@ -477,6 +561,7 @@ export default function App() {
             html: payload.bodyHtml,
             text: stripHtmlToSnippet(payload.bodyHtml, 20000),
             draftId: payload.draftThreadId,
+            attachments: toSendAttachments(payload.attachments),
           });
           setComposeOpen(false);
           showNotice(`Enviado a ${payload.to}`);
@@ -527,7 +612,7 @@ export default function App() {
   );
 
   const handleSendReply = useCallback(
-    (bodyHtml: string) => {
+    (bodyHtml: string, attachments: ComposeAttachment[] = []) => {
       if (!selectedThread) return;
       const last = selectedThread.messages[selectedThread.messages.length - 1];
       if (!last) return;
@@ -550,6 +635,7 @@ export default function App() {
             text: stripHtmlToSnippet(bodyHtml, 20000),
             inReplyTo: parent,
             references,
+            attachments: toSendAttachments(attachments),
           });
           const full = detailToThread(await api.thread(selectedThread.id), selectedThread.folder);
           setThreads((prev) => prev.map((thread) => (thread.id === full.id ? full : thread)));
@@ -562,18 +648,98 @@ export default function App() {
     [api, selectedThread, showNotice, user.email]
   );
 
+  handleOpenRef.current = handleOpenThread;
+
   const handleForwardSelected = useCallback(() => {
     if (!selectedThread) return;
     const latest = selectedThread.messages[selectedThread.messages.length - 1];
     const forwardedBody = `<p></p><blockquote><p><strong>Reenviado de ${latest.sender.name} (${latest.sender.email}):</strong></p>${latest.bodyHtml}</blockquote>`;
+    const kept = (latest.attachments ?? [])
+      .filter((item) => item.blobId)
+      .map((item) => ({
+        id: item.blobId as string,
+        name: item.name,
+        sizeLabel: item.size,
+        contentType:
+          item.kind === 'pdf'
+            ? 'application/pdf'
+            : item.kind === 'image'
+              ? 'image/jpeg'
+              : 'application/octet-stream',
+        blobId: item.blobId,
+      }));
     openCompose({
       to: '',
       subject: selectedThread.subject.startsWith('Fwd:')
         ? selectedThread.subject
         : `Fwd: ${selectedThread.subject}`,
       bodyHtml: forwardedBody,
+      attachments: kept,
     });
   }, [selectedThread, openCompose]);
+
+  const handleShowRemoteImages = useCallback(
+    (messageId: string) => {
+      void (async () => {
+        try {
+          const html = await api.messageHtml(messageId, true);
+          setThreads((prev) =>
+            prev.map((thread) =>
+              thread.id === selectedRef.current
+                ? {
+                    ...thread,
+                    messages: thread.messages.map((message) =>
+                      message.id === messageId
+                        ? { ...message, bodyHtml: html, remoteImagesBlocked: false, isHtmlRich: true }
+                        : message
+                    ),
+                  }
+                : thread
+            )
+          );
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
+    },
+    [api, showNotice]
+  );
+
+  const handleTrustSender = useCallback(
+    (email: string) => {
+      const current = threads.find((thread) => thread.id === selectedRef.current);
+      if (!current) return;
+      void (async () => {
+        try {
+          await api.trustSender(email);
+          const full = detailToThread(await api.thread(current.id), current.folder);
+          setThreads((prev) => prev.map((thread) => (thread.id === full.id ? full : thread)));
+          showNotice('Remitente de confianza');
+        } catch (err) {
+          showNotice(messageOf(err));
+        }
+      })();
+    },
+    [api, showNotice, threads]
+  );
+
+  const loadMoreSearch = useCallback(() => {
+    const query = searchQuery.trim();
+    if (!query || !searchCursor) return;
+    void (async () => {
+      try {
+        const mailboxId = mailboxes.find((mailbox) => mailbox.folder === activeFolder)?.id;
+        const page = await api.search(query, mailboxId, searchCursor);
+        setSearchHits((prev) => [
+          ...prev,
+          ...page.threads.map((item) => summaryToThread(item, item.folder || activeFolder)),
+        ]);
+        setSearchCursor(page.cursor);
+      } catch (err) {
+        showNotice(messageOf(err));
+      }
+    })();
+  }, [api, activeFolder, mailboxes, searchCursor, searchQuery, showNotice]);
 
   const toggleTheme = useCallback(() => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
@@ -868,6 +1034,8 @@ export default function App() {
                 setSelectedThreadId(null);
               }}
               onForward={handleForwardSelected}
+              onShowRemoteImages={handleShowRemoteImages}
+              onTrustSender={handleTrustSender}
               onSendReply={handleSendReply}
             />
           ) : (
@@ -894,6 +1062,8 @@ export default function App() {
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
               onOpenCompose={() => openCompose()}
               onFocusIndexChange={setFocusedIndex}
+              hasMore={Boolean(searchQuery.trim() && searchCursor)}
+              onLoadMore={loadMoreSearch}
             />
           )}
         </AnimatePresence>
@@ -940,6 +1110,8 @@ export default function App() {
       <CommandPalette
         open={paletteOpen}
         commands={commandItems}
+        remoteCommands={paletteRemote}
+        onQueryChange={setPaletteQuery}
         onClose={() => setPaletteOpen(false)}
       />
     </div>

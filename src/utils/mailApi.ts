@@ -1,4 +1,4 @@
-import type { FolderId, MailMessage, MailThread } from '../types/mail';
+import type { ComposeAttachment, FolderId, MailMessage, MailThread } from '../types/mail';
 
 export class ApiError extends Error {
   status: number;
@@ -30,6 +30,7 @@ export interface ThreadSummary {
   count: number;
   unread: boolean;
   messageIds: string[];
+  folder?: FolderId | null;
 }
 
 export interface ThreadDetail {
@@ -57,7 +58,13 @@ export interface SendInput {
   inReplyTo?: string[];
   references?: string[];
   draftId?: string;
-  attachments?: Array<{ filename: string; contentType: string; dataBase64: string }>;
+  attachments?: Array<{
+    filename: string;
+    contentType: string;
+    dataBase64?: string;
+    blobId?: string;
+    size?: number;
+  }>;
 }
 
 export interface DraftInput {
@@ -79,6 +86,13 @@ export interface MailApi {
     cursor?: string
   ): Promise<{ threads: ThreadSummary[]; cursor: string | null }>;
   thread(id: string): Promise<ThreadDetail>;
+  search(
+    q: string,
+    mailboxId?: string,
+    cursor?: string
+  ): Promise<{ threads: ThreadSummary[]; cursor: string | null }>;
+  messageHtml(id: string, allowImages?: boolean): Promise<string>;
+  trustSender(email: string): Promise<void>;
   markRead(id: string): Promise<void>;
   markUnread(id: string): Promise<void>;
   archive(id: string): Promise<void>;
@@ -97,10 +111,11 @@ export function createMailApi(): MailApi {
 }
 
 export function summaryToThread(summary: ThreadSummary, folder: FolderId): MailThread {
+  const resolved = summary.folder || folder;
   const preview = summary.preview || '';
   return {
     id: summary.id,
-    folder,
+    folder: resolved,
     subject: summary.subject,
     rawSubject: summary.rawSubject,
     unread: summary.unread,
@@ -133,8 +148,19 @@ export function detailToThread(detail: ThreadDetail, folder: FolderId): MailThre
       ...message,
       messageIdHeader: message.messageIdHeader ?? undefined,
       references: message.references ?? [],
+      remoteImagesBlocked: message.remoteImagesBlocked,
     })),
   };
+}
+
+export function toSendAttachments(items: ComposeAttachment[] | undefined) {
+  return (items ?? []).map((item) => ({
+    filename: item.name,
+    contentType: item.contentType,
+    dataBase64: item.dataBase64,
+    blobId: item.blobId,
+    size: item.size,
+  }));
 }
 
 function createRemoteMailApi(): MailApi {
@@ -153,6 +179,25 @@ function createRemoteMailApi(): MailApi {
       return request(`/api/threads?${params.toString()}`);
     },
     thread: (id) => request(`/api/threads/${encodeURIComponent(id)}`),
+    search: (q, mailboxId, cursor) => {
+      const params = new URLSearchParams({ q });
+      if (mailboxId) params.set('mailboxId', mailboxId);
+      if (cursor) params.set('cursor', cursor);
+      return request(`/api/search?${params.toString()}`);
+    },
+    messageHtml: async (id, allowImages) => {
+      const params = allowImages ? '?allowImages=1' : '';
+      const response = await fetch(`/api/messages/${encodeURIComponent(id)}/html${params}`, {
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        throw new ApiError('No se pudo cargar el mensaje', response.status);
+      }
+      return response.text();
+    },
+    trustSender: async (email) => {
+      await request('/api/senders/trust', { method: 'POST', body: JSON.stringify({ email }) });
+    },
     markRead: (id) => request(`/api/messages/${encodeURIComponent(id)}/read`, { method: 'POST' }),
     markUnread: (id) =>
       request(`/api/messages/${encodeURIComponent(id)}/unread`, { method: 'POST' }),
@@ -283,6 +328,41 @@ function createMockMailApi(): MailApi {
         updatedAt: thread.updatedAt,
         messages: thread.messages,
       };
+    },
+    search: async (q, mailboxId) => {
+      requireAuth();
+      const needle = q.trim().toLowerCase();
+      const list = threads
+        .filter((thread) => !mailboxId || thread.folder === mailboxId)
+        .filter((thread) => {
+          if (needle === 'no leidos' || needle === 'no leídos' || needle === 'unread') {
+            return thread.unread;
+          }
+          const haystack = [
+            thread.subject,
+            ...thread.messages.flatMap((message) => [
+              message.sender.name,
+              message.sender.email,
+              message.plainSnippet,
+              message.bodyHtml,
+            ]),
+          ]
+            .join(' ')
+            .toLowerCase();
+          return haystack.includes(needle);
+        })
+        .map((thread) => ({ ...summary(thread), folder: thread.folder }));
+      return { threads: list, cursor: null };
+    },
+    messageHtml: async (id, allowImages) => {
+      requireAuth();
+      const message = threads.flatMap((thread) => thread.messages).find((item) => item.id === id);
+      if (!message) throw new ApiError('No se encontró el mensaje', 404);
+      if (allowImages) return message.bodyHtml;
+      return message.bodyHtml.replace(/src="https?:[^"]*"/gi, '');
+    },
+    trustSender: async () => {
+      requireAuth();
     },
     markRead: async (id) => {
       requireAuth();

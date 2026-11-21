@@ -4,6 +4,7 @@ pub mod error;
 pub mod jmap;
 pub mod routes;
 pub mod sanitize;
+pub mod trust;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use crate::routes::AppState;
 
 pub fn router(state: AppState) -> axum::Router {
     routes::router(state)
-        .layer(RequestBodyLimitLayer::new(20 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(40 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -43,10 +44,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cfg.user.clone(),
         cfg.stalwart_password.clone(),
     )?);
+    let trust = Arc::new(crate::trust::TrustedSenders::load(
+        &cfg.trusted_senders_path,
+    )?);
     let state = AppState {
         cfg: Arc::new(cfg),
         jmap,
         limiter: Arc::new(auth::LoginLimiter::default()),
+        trust,
     };
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

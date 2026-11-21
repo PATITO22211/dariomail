@@ -123,6 +123,31 @@ pub fn build_thread_query(
     })
 }
 
+pub fn build_email_query(account: &str, filter: Value, limit: u64, anchor: Option<&str>) -> Value {
+    let mut query = json!({
+        "accountId": account,
+        "filter": filter,
+        "sort": [{"property": "receivedAt", "isAscending": false}],
+        "collapseThreads": true,
+        "limit": limit
+    });
+    if let Some(anchor) = anchor {
+        query["anchor"] = json!(anchor);
+        query["anchorOffset"] = json!(1);
+    }
+    json!({
+        "using": [CORE, MAIL],
+        "methodCalls": [
+            ["Email/query", query, "q"],
+            ["Email/get", {
+                "accountId": account,
+                "#ids": {"resultOf": "q", "name": "Email/query", "path": "/ids"},
+                "properties": SUMMARY_PROPS
+            }, "e"]
+        ]
+    })
+}
+
 pub fn build_thread_get(account: &str, thread_ids: &[String]) -> Value {
     json!({
         "using": [CORE, MAIL],

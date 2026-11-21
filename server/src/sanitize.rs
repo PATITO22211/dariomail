@@ -82,6 +82,14 @@ fn attr_value(attr: &str) -> &str {
     }
 }
 
+pub fn contains_remote_images(html: &str) -> bool {
+    REMOTE_ATTR.captures_iter(html).any(|caps| {
+        caps.get(0)
+            .map(|item| is_remote_url(attr_value(item.as_str())))
+            .unwrap_or(false)
+    })
+}
+
 pub fn is_remote_url(value: &str) -> bool {
     let trimmed = value.trim();
     let lower = trimmed.to_ascii_lowercase();

@@ -20,6 +20,7 @@ export interface MailMessage {
   unread?: boolean;
   messageIdHeader?: string;
   references?: string[];
+  remoteImagesBlocked?: boolean;
   attachments?: Array<{
     name: string;
     size: string;
@@ -43,11 +44,22 @@ export interface MailThread {
   draftBodyHtml?: string;
 }
 
+export interface ComposeAttachment {
+  id: string;
+  name: string;
+  sizeLabel: string;
+  contentType: string;
+  dataBase64?: string;
+  blobId?: string;
+  size?: number;
+}
+
 export interface ComposePayload {
   draftThreadId?: string;
   to: string;
   subject: string;
   bodyHtml: string;
+  attachments?: ComposeAttachment[];
 }
 
 export interface CommandItem {

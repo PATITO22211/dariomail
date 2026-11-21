@@ -9,15 +9,17 @@ use tracing::warn;
 
 use crate::error::ApiError;
 use crate::jmap::build::{
-    build_destroy, build_draft, build_email_get, build_empty_trash, build_identity_get,
-    build_keyword_update, build_mailbox_create_archive, build_mailbox_get, build_move, build_send,
-    build_thread_get, build_thread_query, DraftInput, OutboundAttachment, OutboundMail,
+    build_destroy, build_draft, build_email_get, build_email_query, build_empty_trash,
+    build_identity_get, build_keyword_update, build_mailbox_create_archive, build_mailbox_get,
+    build_move, build_send, build_thread_get, build_thread_query, DraftInput, OutboundAttachment,
+    OutboundMail,
 };
 use crate::jmap::parse::{
     assemble_thread_page, build_thread_detail, created_id, decode_cursor, ensure_set_ok,
     message_html, parse_email_list, parse_mailboxes, parse_method_responses, parse_threads,
     EmailRecord, Mailbox, ThreadDetail, ThreadPage,
 };
+use crate::jmap::search::search_filter;
 use crate::sanitize::html_to_text;
 
 #[derive(Clone, Debug)]
@@ -112,6 +114,53 @@ impl JmapClient {
                 anchor.as_deref(),
             ))
             .await?;
+        self.finish_page(&session.account_id, first, limit as usize)
+            .await
+    }
+
+    pub async fn search_page(
+        &self,
+        mailbox_id: Option<&str>,
+        query: &str,
+        limit: u64,
+        cursor: Option<&str>,
+    ) -> Result<ThreadPage, ApiError> {
+        let session = self.session().await?;
+        let limit = limit.clamp(1, 100);
+        let anchor = match cursor {
+            Some(value) if !value.is_empty() => Some(decode_cursor(value)?),
+            _ => None,
+        };
+        let filter = search_filter(query, mailbox_id)?;
+        let first = self
+            .call(&build_email_query(
+                &session.account_id,
+                filter,
+                limit,
+                anchor.as_deref(),
+            ))
+            .await?;
+        let mut page = self
+            .finish_page(&session.account_id, first, limit as usize)
+            .await?;
+        let boxes = self.mailboxes().await?;
+        for thread in &mut page.threads {
+            thread.folder = thread.mailbox_ids.iter().find_map(|id| {
+                boxes
+                    .iter()
+                    .find(|mailbox| &mailbox.id == id)
+                    .and_then(|mailbox| mailbox.folder.clone())
+            });
+        }
+        Ok(page)
+    }
+
+    async fn finish_page(
+        &self,
+        account_id: &str,
+        first: serde_json::Value,
+        limit: usize,
+    ) -> Result<ThreadPage, ApiError> {
         let calls = parse_method_responses(&first)?;
         let query_ids = string_ids(method_payload(&calls, "q")?.get("ids"))?;
         let reps = parse_email_list(method_payload(&calls, "e")?.get("list"))?;
@@ -123,7 +172,7 @@ impl JmapClient {
         }
         let thread_ids = dedup(reps.iter().map(|email| email.thread_id.clone()));
         let second = self
-            .call(&build_thread_get(&session.account_id, &thread_ids))
+            .call(&build_thread_get(account_id, &thread_ids))
             .await?;
         let threads = parse_threads(&method_payload(&parse_method_responses(&second)?, "t")?)?;
         let email_ids = dedup(threads.iter().flat_map(|thread| thread.email_ids.clone()));
@@ -131,20 +180,20 @@ impl JmapClient {
             Vec::new()
         } else {
             let third = self
-                .call(&build_email_get(&session.account_id, &email_ids, false))
+                .call(&build_email_get(account_id, &email_ids, false))
                 .await?;
             parse_email_list(method_payload(&parse_method_responses(&third)?, "e")?.get("list"))?
         };
         Ok(assemble_thread_page(
-            &query_ids,
-            &reps,
-            &threads,
-            &emails,
-            limit as usize,
+            &query_ids, &reps, &threads, &emails, limit,
         ))
     }
 
-    pub async fn thread(&self, thread_id: &str) -> Result<ThreadDetail, ApiError> {
+    pub async fn thread(
+        &self,
+        thread_id: &str,
+        trusted: &std::collections::HashSet<String>,
+    ) -> Result<ThreadDetail, ApiError> {
         let session = self.session().await?;
         let first = self
             .call(&build_thread_get(
@@ -169,16 +218,23 @@ impl JmapClient {
             .await?;
         let emails =
             parse_email_list(method_payload(&parse_method_responses(&second)?, "e")?.get("list"))?;
-        build_thread_detail(&thread, &emails, false)
+        build_thread_detail(&thread, &emails, trusted)
     }
 
     pub async fn message_html(
         &self,
         email_id: &str,
         allow_remote_images: bool,
+        trusted: &std::collections::HashSet<String>,
     ) -> Result<String, ApiError> {
         let email = self.email(email_id, true).await?;
-        Ok(message_html(&email, allow_remote_images))
+        let sender = email
+            .from
+            .first()
+            .map(|person| person.email.to_ascii_lowercase())
+            .unwrap_or_default();
+        let allow = allow_remote_images || trusted.contains(&sender);
+        Ok(message_html(&email, allow))
     }
 
     pub async fn set_seen(&self, email_id: &str, seen: bool) -> Result<(), ApiError> {

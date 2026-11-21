@@ -1,6 +1,7 @@
 mod build;
 mod client;
 mod parse;
+mod search;
 
 pub use build::{
     build_draft, build_email_get, build_empty_trash, build_keyword_update,
@@ -13,3 +14,4 @@ pub use parse::{
     parse_mailboxes, parse_method_responses, parse_threads, EmailRecord, Mailbox, MethodResponse,
     ThreadDetail, ThreadEmails, ThreadPage, ThreadSummary,
 };
+pub use search::search_filter;
