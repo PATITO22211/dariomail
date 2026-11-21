@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CURRENT_USER, SEED_THREADS } from '../data/seedThreads';
+import type { MailMessage, MailThread, Participant } from '../types/mail';
 import {
   appendReplyToThread,
   emptyTrashThreads,
@@ -17,15 +17,116 @@ import {
   stripHtmlToSnippet,
 } from './mailStore';
 
+const CURRENT_USER: Participant = {
+  name: 'Dario',
+  email: 'dario@dariomsi.com',
+};
+
+function message(id: string, sender: Participant, snippet: string): MailMessage {
+  return {
+    id,
+    sender,
+    recipients: ['dario@dariomsi.com'],
+    timestamp: '2026-11-20T12:00:00Z',
+    bodyHtml: `<p>${snippet}</p>`,
+    plainSnippet: snippet,
+  };
+}
+
+const elena: Participant = { name: 'Elena Vance', email: 'elena@ateliervance.es' };
+
+const FIXTURE: MailThread[] = [
+  {
+    id: 'thr-elena-monograph',
+    folder: 'inbox',
+    subject: 'Monografía',
+    unread: true,
+    category: 'correspondence',
+    updatedAt: '2026-11-20T15:00:00Z',
+    messages: [
+      message('m1', elena, 'Primera nota'),
+      message('m2', CURRENT_USER, 'Respuesta'),
+      message('m3', elena, 'Cierre'),
+    ],
+  },
+  {
+    id: 'thr-unread-2',
+    folder: 'inbox',
+    subject: 'Pendiente dos',
+    unread: true,
+    updatedAt: '2026-11-20T14:00:00Z',
+    messages: [message('m4', elena, 'Dos')],
+  },
+  {
+    id: 'thr-unread-3',
+    folder: 'inbox',
+    subject: 'Pendiente tres',
+    unread: true,
+    updatedAt: '2026-11-20T13:00:00Z',
+    messages: [message('m5', elena, 'Tres')],
+  },
+  {
+    id: 'thr-invoice-linear',
+    folder: 'inbox',
+    subject: 'Factura Linear',
+    unread: false,
+    category: 'invoice',
+    updatedAt: '2026-11-19T10:00:00Z',
+    messages: [message('m6', elena, 'Factura')],
+  },
+  {
+    id: 'thr-invoice-foundry',
+    folder: 'archive',
+    subject: 'Factura Foundry',
+    unread: false,
+    category: 'invoice',
+    updatedAt: '2026-11-18T10:00:00Z',
+    messages: [message('m7', elena, 'Factura archivo')],
+  },
+  {
+    id: 'thr-invoice-other',
+    folder: 'sent',
+    subject: 'Factura enviada',
+    unread: false,
+    category: 'invoice',
+    updatedAt: '2026-11-17T10:00:00Z',
+    messages: [message('m8', CURRENT_USER, 'Factura enviada')],
+  },
+  {
+    id: 'thr-draft-editorial',
+    folder: 'drafts',
+    subject: 'Borrador',
+    unread: false,
+    updatedAt: '2026-11-16T10:00:00Z',
+    messages: [message('m9', CURRENT_USER, 'Borrador')],
+  },
+  {
+    id: 'thr-trash-1',
+    folder: 'trash',
+    subject: 'Viejo uno',
+    unread: false,
+    updatedAt: '2026-11-15T10:00:00Z',
+    messages: [message('m10', elena, 'Basura')],
+  },
+  {
+    id: 'thr-trash-2',
+    folder: 'trash',
+    subject: 'Viejo dos',
+    unread: false,
+    updatedAt: '2026-11-14T10:00:00Z',
+    messages: [message('m11', elena, 'Basura dos')],
+  },
+];
+
 test('getFolderCounts counts unread inbox, drafts, and trash accurately', () => {
-  const counts = getFolderCounts(SEED_THREADS);
+  const counts = getFolderCounts(FIXTURE);
   assert.equal(counts.inbox, 3);
   assert.equal(counts.drafts, 1);
   assert.equal(counts.trash, 2);
 });
 
 test('filterThreadsForFolder filters invoices via "facturas" across active folders excluding trash', () => {
-  const results = filterThreadsForFolder(SEED_THREADS, 'inbox', 'facturas');
+  const results = filterThreadsForFolder(FIXTURE, 'inbox', 'facturas');
   assert.equal(results.length, 3);
   assert.ok(results.every((t) => t.folder !== 'trash'));
   assert.ok(results.some((t) => t.id === 'thr-invoice-linear'));
@@ -33,14 +134,14 @@ test('filterThreadsForFolder filters invoices via "facturas" across active folde
 });
 
 test('setThreadUnread updates unread status and decrements inbox unread badge', () => {
-  const updated = setThreadUnread(SEED_THREADS, 'thr-elena-monograph', false);
+  const updated = setThreadUnread(FIXTURE, 'thr-elena-monograph', false);
   assert.equal(getFolderCounts(updated).inbox, 2);
   const restored = setThreadUnread(updated, 'thr-elena-monograph', true);
   assert.equal(getFolderCounts(restored).inbox, 3);
 });
 
 test('moveThreadToFolder moves thread to archive and clears unread state', () => {
-  const updated = moveThreadToFolder(SEED_THREADS, 'thr-elena-monograph', 'archive');
+  const updated = moveThreadToFolder(FIXTURE, 'thr-elena-monograph', 'archive');
   const moved = updated.find((t) => t.id === 'thr-elena-monograph');
   assert.equal(moved?.folder, 'archive');
   assert.equal(moved?.unread, false);
@@ -48,9 +149,9 @@ test('moveThreadToFolder moves thread to archive and clears unread state', () =>
 });
 
 test('emptyTrashThreads removes all trash threads while preserving other folders', () => {
-  const after = emptyTrashThreads(SEED_THREADS);
+  const after = emptyTrashThreads(FIXTURE);
   assert.equal(getFolderCounts(after).trash, 0);
-  assert.equal(after.length, SEED_THREADS.length - 2);
+  assert.equal(after.length, FIXTURE.length - 2);
 });
 
 test('isComposeReady enforces valid email recipient and non-empty subject or body', () => {
@@ -64,7 +165,7 @@ test('isComposeReady enforces valid email recipient and non-empty subject or bod
 test('sendEmailThread adds sent thread and removes source draft if present', () => {
   const now = '2026-11-20T16:30:00-08:00';
   const { threads, sentThread } = sendEmailThread(
-    SEED_THREADS,
+    FIXTURE,
     {
       draftThreadId: 'thr-draft-editorial',
       to: 'elena@ateliervance.es',
@@ -83,7 +184,7 @@ test('sendEmailThread adds sent thread and removes source draft if present', () 
 test('saveDraftThread creates and updates drafts cleanly', () => {
   const now = '2026-11-20T16:35:00-08:00';
   const withNewDraft = saveDraftThread(
-    SEED_THREADS,
+    FIXTURE,
     {
       to: 'clara@solerestudio.com',
       subject: 'Notas cerámica',
@@ -116,7 +217,7 @@ test('saveDraftThread creates and updates drafts cleanly', () => {
 test('appendReplyToThread appends reply message and updates timestamp', () => {
   const now = '2026-11-20T16:40:00-08:00';
   const updated = appendReplyToThread(
-    SEED_THREADS,
+    FIXTURE,
     'thr-elena-monograph',
     '<p>Confirmado para prensa.</p>',
     CURRENT_USER,

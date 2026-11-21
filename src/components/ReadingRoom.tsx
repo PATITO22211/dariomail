@@ -531,22 +531,39 @@ export function ReadingRoom({
 
                         {!deepReading && msg.attachments && msg.attachments.length > 0 && (
                           <div className="mt-7 pt-5 border-t border-[var(--hairline)] flex flex-wrap gap-4">
-                            {msg.attachments.map((att) => (
-                              <div
-                                key={att.name}
-                                className="inline-flex items-center gap-2.5 text-[13px] text-[var(--ink-secondary)]"
-                              >
-                                <Paperclip
-                                  className="w-3.5 h-3.5 text-[var(--accent)]"
-                                  strokeWidth={1.65}
-                                />
-                                <span className="text-[var(--ink-primary)]">{att.name}</span>
-                                <span aria-hidden="true">·</span>
-                                <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
-                                  {att.size}
-                                </span>
-                              </div>
-                            ))}
+                            {msg.attachments.map((att) => {
+                              const className =
+                                'inline-flex items-center gap-2.5 text-[13px] text-[var(--ink-secondary)]';
+                              const chip = (
+                                <>
+                                  <Paperclip
+                                    className="w-3.5 h-3.5 text-[var(--accent)]"
+                                    strokeWidth={1.65}
+                                  />
+                                  <span className="text-[var(--ink-primary)]">{att.name}</span>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
+                                    {att.size}
+                                  </span>
+                                </>
+                              );
+                              if (att.blobId) {
+                                return (
+                                  <a
+                                    key={att.blobId}
+                                    href={`/api/blobs/${encodeURIComponent(att.blobId)}?name=${encodeURIComponent(att.name)}`}
+                                    className={className}
+                                  >
+                                    {chip}
+                                  </a>
+                                );
+                              }
+                              return (
+                                <div key={att.name} className={className}>
+                                  {chip}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>

@@ -17,10 +17,14 @@ export interface MailMessage {
   bodyHtml: string;
   plainSnippet: string;
   isHtmlRich?: boolean;
+  unread?: boolean;
+  messageIdHeader?: string;
+  references?: string[];
   attachments?: Array<{
     name: string;
     size: string;
     kind: 'pdf' | 'image' | 'doc';
+    blobId?: string;
   }>;
 }
 
@@ -32,6 +36,8 @@ export interface MailThread {
   starred?: boolean;
   category?: 'correspondence' | 'newsletter' | 'invoice' | 'personal';
   updatedAt: string; // ISO string
+  rawSubject?: string;
+  messageIds?: string[];
   messages: MailMessage[];
   draftTo?: string;
   draftBodyHtml?: string;
