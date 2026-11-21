@@ -213,9 +213,9 @@ async fn session_urls_threads_html_and_send() {
         .iter()
         .find(|body| body.contains("EmailSubmission/set"))
         .expect("envío");
-    assert!(submission.contains("\"#emailId\""));
-    assert!(submission.contains("\"resultOf\":\"em\""));
-    assert!(submission.contains("\"path\":\"/created/msg/id\""));
+    assert!(submission.contains("\"emailId\":\"#msg\""));
+    assert!(!submission.contains("\"#emailId\""));
+    assert!(!submission.contains("\"charset\""));
     assert!(submission.contains("<m1@example.com>"));
     assert!(submission.contains("ident-dario"));
     assert!(recorded.iter().all(|body| !body.contains("app-secret")));
