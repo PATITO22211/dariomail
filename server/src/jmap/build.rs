@@ -316,7 +316,8 @@ pub fn build_send(account: &str, mail: &OutboundMail) -> Value {
                 "accountId": account,
                 "create": {
                     "sub": {
-                        "#emailId": {"resultOf": "em", "name": "Email/set", "path": "/created/msg/id"},
+                        // RFC 8620 5.3: dentro de create se referencia el id de creación con "#msg".
+                        "emailId": "#msg",
                         "identityId": mail.identity_id,
                         "envelope": {
                             "mailFrom": {"email": mail.from_email},
@@ -444,11 +445,8 @@ mod tests {
         }
         assert_eq!(calls[1][0], "EmailSubmission/set");
         assert_eq!(calls[1][1]["create"]["sub"]["identityId"], "ident-1");
-        assert_eq!(calls[1][1]["create"]["sub"]["#emailId"]["resultOf"], "em");
-        assert_eq!(
-            calls[1][1]["create"]["sub"]["#emailId"]["path"],
-            "/created/msg/id"
-        );
+        assert_eq!(calls[1][1]["create"]["sub"]["emailId"], "#msg");
+        assert!(calls[1][1]["create"]["sub"].get("#emailId").is_none());
         assert_eq!(
             calls[1][1]["create"]["sub"]["envelope"]["rcptTo"][1]["email"],
             "bcc@example.com"

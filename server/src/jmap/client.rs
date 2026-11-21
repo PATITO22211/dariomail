@@ -375,9 +375,17 @@ impl JmapClient {
         let calls = parse_method_responses(&response)?;
         let email_set = method_payload(&calls, "em")?;
         ensure_set_ok(&email_set)?;
-        ensure_set_ok(&method_payload(&calls, "sub")?)?;
-        created_id(&email_set, "msg")
-            .ok_or_else(|| ApiError::Upstream("El envío no devolvió id".into()))
+        let email_id = created_id(&email_set, "msg")
+            .ok_or_else(|| ApiError::Upstream("El envío no devolvió id".into()))?;
+        let submitted = method_payload(&calls, "sub").and_then(|sub| ensure_set_ok(&sub));
+        if let Err(err) = submitted {
+            // Si no salió, no dejamos una copia fantasma en Enviados.
+            let _ = self
+                .call(&build_destroy(&session.account_id, &email_id))
+                .await;
+            return Err(err);
+        }
+        Ok(email_id)
     }
 
     pub async fn upload_blob(
