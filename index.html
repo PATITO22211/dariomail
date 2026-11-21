@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DarioMail — inbox.dariomsi.com</title>
+    <meta
+      name="description"
+      content="Cliente de correo editorial minimalista diseñado para DarioMSI — tipografía literaria, superficies de papel cálido y enfoque absoluto."
+    />
+    <meta property="og:title" content="DarioMail — inbox.dariomsi.com" />
+    <meta
+      property="og:description"
+      content="Cliente de correo editorial minimalista diseñado para DarioMSI — tipografía literaria, superficies de papel cálido y enfoque absoluto."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('dariomail-theme-v3');
+          if (saved === 'light') {
+            document.documentElement.classList.remove('dark');
+          } else {
+            document.documentElement.classList.add('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="antialiased selection:bg-[#7C1D24]/15 selection:text-inherit">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
