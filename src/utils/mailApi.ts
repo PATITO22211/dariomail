@@ -97,6 +97,8 @@ export interface MailApi {
   markUnread(id: string): Promise<void>;
   archive(id: string): Promise<void>;
   trash(id: string): Promise<void>;
+  restore(id: string): Promise<void>;
+  destroy(id: string): Promise<void>;
   move(id: string, mailboxId: string): Promise<void>;
   send(input: SendInput): Promise<void>;
   saveDraft(input: DraftInput): Promise<{ id: string }>;
@@ -204,6 +206,10 @@ function createRemoteMailApi(): MailApi {
     archive: (id) =>
       request(`/api/messages/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
     trash: (id) => request(`/api/messages/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    restore: (id) =>
+      request(`/api/messages/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+    destroy: (id) =>
+      request(`/api/messages/${encodeURIComponent(id)}/destroy`, { method: 'POST' }),
     move: (id, mailboxId) =>
       request(`/api/messages/${encodeURIComponent(id)}/move`, {
         method: 'POST',
@@ -379,6 +385,16 @@ function createMockMailApi(): MailApi {
     trash: async (id) => {
       requireAuth();
       touch(threads, id, (thread) => ({ ...thread, folder: 'trash', unread: false }));
+    },
+    restore: async (id) => {
+      requireAuth();
+      touch(threads, id, (thread) => ({ ...thread, folder: 'inbox' }));
+    },
+    destroy: async (id) => {
+      requireAuth();
+      threads = threads.filter(
+        (thread) => thread.id !== id && !(thread.messageIds ?? []).includes(id)
+      );
     },
     move: async (id, mailboxId) => {
       requireAuth();

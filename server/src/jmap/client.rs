@@ -281,6 +281,32 @@ impl JmapClient {
         ensure_set_ok(&method_payload(&parse_method_responses(&response)?, "u")?)
     }
 
+    pub async fn destroy_trash_email(&self, email_id: &str) -> Result<(), ApiError> {
+        let email = self.email(email_id, false).await?;
+        let trash = self
+            .mailbox_by_role("trash")
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("No hay papelera".into()))?;
+        if !email.mailbox_ids.iter().any(|id| id == &trash) {
+            return Err(ApiError::BadRequest(
+                "Solo se puede borrar definitivamente desde la papelera".into(),
+            ));
+        }
+        let session = self.session().await?;
+        let response = self
+            .call(&build_destroy(&session.account_id, email_id))
+            .await?;
+        ensure_set_ok(&method_payload(&parse_method_responses(&response)?, "d")?)
+    }
+
+    pub async fn restore_to_inbox(&self, email_id: &str) -> Result<(), ApiError> {
+        let inbox = self
+            .mailbox_by_role("inbox")
+            .await?
+            .ok_or_else(|| ApiError::BadRequest("No hay bandeja de entrada".into()))?;
+        self.move_email(email_id, &inbox, false).await
+    }
+
     pub async fn destroy_draft(&self, email_id: &str) -> Result<(), ApiError> {
         let email = self.email(email_id, false).await?;
         let drafts = self

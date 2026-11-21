@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { motion, useScroll, useSpring, useTransform } from 'motion/react';
 import {
   SwipeableThreadRow,
+  type SwipeRevealAction,
   usePrefersReducedMotion,
   useSwipeListEnabled,
+  useSwipeRowPrimaryTap,
 } from './SwipeableThreadRow';
 import {
   Archive,
@@ -49,6 +51,8 @@ interface ThreadFeedProps {
   onArchiveThread: (threadId: string) => void;
   onTrashThread: (threadId: string) => void;
   onRestoreThread: (threadId: string) => void;
+  onMoveToInboxThread: (threadId: string) => void;
+  onPermanentDeleteThread: (threadId: string) => void;
   onToggleUnread: (threadId: string, nextUnread: boolean) => void;
   onEmptyTrash: () => void;
   onOpenMobileMenu: () => void;
@@ -59,6 +63,25 @@ interface ThreadFeedProps {
 }
 
 type InboxFilter = 'all' | 'unread';
+
+function OpenThreadButton({
+  onOpen,
+  className,
+  children,
+  'aria-label': ariaLabel,
+}: {
+  onOpen: () => void;
+  className?: string;
+  children: ReactNode;
+  'aria-label'?: string;
+}) {
+  const onTap = useSwipeRowPrimaryTap(onOpen);
+  return (
+    <button type="button" onClick={onTap} aria-label={ariaLabel} className={className}>
+      {children}
+    </button>
+  );
+}
 
 function RowAvatar({ name, avatar }: { name: string; avatar?: string }) {
   const [failed, setFailed] = useState(false);
@@ -106,6 +129,8 @@ export function ThreadFeed({
   onArchiveThread,
   onTrashThread,
   onRestoreThread,
+  onMoveToInboxThread,
+  onPermanentDeleteThread,
   onToggleUnread,
   onEmptyTrash,
   onOpenMobileMenu,
@@ -233,8 +258,61 @@ export function ThreadFeed({
       latestMsg?.sender.avatar;
     const avatarName = latestMsg?.sender.name ?? displaySender;
 
-    const canArchive = folder !== 'archive' && folder !== 'trash';
-    const canTrash = folder !== 'trash';
+    const swipeActions: SwipeRevealAction[] = [];
+    if (folder === 'trash') {
+      swipeActions.push({
+        kind: 'restore',
+        label: 'Restaurar',
+        side: 'start',
+        onInvoke: () => onRestoreThread(thread.id),
+        allowFullSwipeCommit: true,
+      });
+      swipeActions.push({
+        kind: 'destroy',
+        label: 'Borrar',
+        side: 'end',
+        onInvoke: () => onPermanentDeleteThread(thread.id),
+        allowFullSwipeCommit: false,
+      });
+    } else if (folder === 'archive') {
+      swipeActions.push({
+        kind: 'inbox',
+        label: 'Recibidos',
+        side: 'start',
+        onInvoke: () => onMoveToInboxThread(thread.id),
+        allowFullSwipeCommit: true,
+      });
+      swipeActions.push({
+        kind: 'trash',
+        label: 'Borrar',
+        side: 'end',
+        onInvoke: () => onTrashThread(thread.id),
+        allowFullSwipeCommit: true,
+      });
+    } else if (folder === 'drafts') {
+      swipeActions.push({
+        kind: 'trash',
+        label: 'Borrar',
+        side: 'end',
+        onInvoke: () => onTrashThread(thread.id),
+        allowFullSwipeCommit: true,
+      });
+    } else {
+      swipeActions.push({
+        kind: 'archive',
+        label: 'Archivar',
+        side: 'start',
+        onInvoke: () => onArchiveThread(thread.id),
+        allowFullSwipeCommit: true,
+      });
+      swipeActions.push({
+        kind: 'trash',
+        label: 'Borrar',
+        side: 'end',
+        onInvoke: () => onTrashThread(thread.id),
+        allowFullSwipeCommit: true,
+      });
+    }
 
     const rowInner = (
       <>
@@ -245,9 +323,8 @@ export function ThreadFeed({
           />
         )}
 
-        <button
-          type="button"
-          onClick={() => onOpenThread(thread)}
+        <OpenThreadButton
+          onOpen={() => onOpenThread(thread)}
           aria-label={`${thread.unread ? 'No leído: ' : ''}${displaySender} — ${thread.subject}`}
           className="w-full text-left flex items-start gap-4 px-4 py-4.5 rounded-xl sacred-focus cursor-pointer"
         >
@@ -311,7 +388,7 @@ export function ThreadFeed({
               </span>
             </div>
           </div>
-        </button>
+        </OpenThreadButton>
 
         <div className="absolute right-3 top-3.5 hidden md:flex items-center gap-0.5 px-1.5 py-1 rounded-full floating-monolith opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity duration-150">
           {folder !== 'archive' && folder !== 'trash' && (
@@ -389,14 +466,11 @@ export function ThreadFeed({
     <SwipeableThreadRow
       key={thread.id}
       threadId={thread.id}
-      canArchive={canArchive}
-      canTrash={canTrash}
+      actions={swipeActions}
       swipeEnabled={swipeEnabled}
       reducedMotion={reducedMotion}
       isRevealed={revealedThreadId === thread.id}
       onRevealChange={setRevealedThreadId}
-      onArchive={() => onArchiveThread(thread.id)}
-      onTrash={() => onTrashThread(thread.id)}
       rowRef={(el) => {
         rowRefs.current[globalIndex] = el;
       }}

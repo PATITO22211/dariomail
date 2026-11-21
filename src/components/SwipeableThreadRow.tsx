@@ -1,5 +1,7 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -7,12 +9,23 @@ import {
   type TouchEvent,
 } from 'react';
 import { animate, motion, useMotionValue, type MotionProps } from 'motion/react';
-import { Archive, Trash2 } from 'lucide-react';
+import { Archive, Inbox, RotateCcw, Trash2 } from 'lucide-react';
 
 const ACTION_WIDTH = 88;
-const SNAP_THRESHOLD = 48;
-const FULL_SWIPE = 108;
+const SNAP_THRESHOLD = 44;
 const LOCK_PX = 10;
+const COMMIT_RATIO = 0.7;
+const TAP_GUARD_MS = 380;
+
+export type SwipeActionKind = 'archive' | 'trash' | 'restore' | 'inbox' | 'destroy';
+
+export type SwipeRevealAction = {
+  kind: SwipeActionKind;
+  label: string;
+  side: 'start' | 'end';
+  onInvoke: () => void;
+  allowFullSwipeCommit: boolean;
+};
 
 export function useSwipeListEnabled(): boolean {
   const [enabled, setEnabled] = useState(false);
@@ -42,16 +55,41 @@ export function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
+type SwipeRowTapContextValue = {
+  handlePrimaryTap: (openThread: () => void) => void;
+};
+
+const SwipeRowTapContext = createContext<SwipeRowTapContextValue | null>(null);
+
+export function useSwipeRowPrimaryTap(openThread: () => void) {
+  const ctx = useContext(SwipeRowTapContext);
+  return () => {
+    if (ctx) ctx.handlePrimaryTap(openThread);
+    else openThread();
+  };
+}
+
+function actionTone(kind: SwipeActionKind, side: 'start' | 'end'): string {
+  if (kind === 'trash' || kind === 'destroy') return 'bg-[#6B2222] text-[#F4EFE6]';
+  if (kind === 'restore' || kind === 'inbox') return 'bg-[#2d4a36] text-[#F4EFE6]';
+  if (side === 'start') return 'bg-[#2a2622] text-[#F4EFE6]';
+  return 'bg-[#6B2222] text-[#F4EFE6]';
+}
+
+function ActionIcon({ kind }: { kind: SwipeActionKind }) {
+  if (kind === 'restore') return <RotateCcw className="w-5 h-5" strokeWidth={1.65} />;
+  if (kind === 'inbox') return <Inbox className="w-5 h-5" strokeWidth={1.65} />;
+  if (kind === 'archive') return <Archive className="w-5 h-5" strokeWidth={1.65} />;
+  return <Trash2 className="w-5 h-5" strokeWidth={1.65} />;
+}
+
 type SwipeableThreadRowProps = {
   threadId: string;
-  canArchive: boolean;
-  canTrash: boolean;
+  actions: SwipeRevealAction[];
   swipeEnabled: boolean;
   reducedMotion: boolean;
   isRevealed: boolean;
   onRevealChange: (threadId: string | null) => void;
-  onArchive: () => void;
-  onTrash: () => void;
   children: ReactNode;
   motionProps?: MotionProps;
   rowRef?: (el: HTMLLIElement | null) => void;
@@ -66,16 +104,21 @@ type TouchGesture = {
   locked: 'none' | 'horizontal' | 'vertical';
 };
 
+function hapticPulse() {
+  try {
+    navigator.vibrate?.(14);
+  } catch {
+    // Sin vibración en este dispositivo
+  }
+}
+
 export function SwipeableThreadRow({
   threadId,
-  canArchive,
-  canTrash,
+  actions,
   swipeEnabled,
   reducedMotion,
   isRevealed,
   onRevealChange,
-  onArchive,
-  onTrash,
   children,
   motionProps,
   rowRef,
@@ -84,15 +127,26 @@ export function SwipeableThreadRow({
 }: SwipeableThreadRowProps) {
   const x = useMotionValue(0);
   const shellRef = useRef<HTMLDivElement | null>(null);
+  const rowWidthRef = useRef(320);
   const gesture = useRef<TouchGesture | null>(null);
-  const [collapsing, setCollapsing] = useState(false);
+  const tapGuardUntil = useRef(0);
+  const [committing, setCommitting] = useState<SwipeActionKind | null>(null);
+  const [commitFill, setCommitFill] = useState(0);
 
-  const snapOpenX = useCallback(() => {
-    const current = x.get();
-    if (current < -SNAP_THRESHOLD && canTrash) return -ACTION_WIDTH;
-    if (current > SNAP_THRESHOLD && canArchive) return ACTION_WIDTH;
-    return 0;
-  }, [canArchive, canTrash, x]);
+  const startAction = actions.find((action) => action.side === 'start');
+  const endAction = actions.find((action) => action.side === 'end');
+
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    const measure = () => {
+      rowWidthRef.current = el.clientWidth || 320;
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const animateTo = useCallback(
     (target: number, onDone?: () => void) => {
@@ -123,34 +177,40 @@ export function SwipeableThreadRow({
     }
   }, [animateTo, isRevealed, x]);
 
-  const runAction = useCallback(
-    async (kind: 'archive' | 'trash') => {
-      if (collapsing) return;
-      setCollapsing(true);
-      const w = typeof window !== 'undefined' ? window.innerWidth : 480;
-      const target = kind === 'trash' ? -w : w;
+  const snapOpenX = useCallback(() => {
+    const current = x.get();
+    if (current < -SNAP_THRESHOLD && endAction) return -ACTION_WIDTH;
+    if (current > SNAP_THRESHOLD && startAction) return ACTION_WIDTH;
+    return 0;
+  }, [endAction, startAction, x]);
+
+  const runCommitAnimation = useCallback(
+    async (action: SwipeRevealAction) => {
+      if (committing) return;
+      setCommitting(action.kind);
+      hapticPulse();
+      const width = rowWidthRef.current;
       if (reducedMotion) {
-        if (kind === 'archive') onArchive();
-        else onTrash();
-        setCollapsing(false);
+        action.onInvoke();
+        setCommitting(null);
+        setCommitFill(0);
         return;
       }
+      setCommitFill(width);
       await new Promise<void>((resolve) => {
-        animate(x, target, {
-          duration: 0.22,
-          ease: [0.32, 0.72, 0, 1],
-          onComplete: () => resolve(),
-        });
+        window.setTimeout(resolve, 220);
       });
-      if (kind === 'archive') onArchive();
-      else onTrash();
-      setCollapsing(false);
+      action.onInvoke();
+      setCommitting(null);
+      setCommitFill(0);
+      x.set(0);
+      onRevealChange(null);
     },
-    [collapsing, onArchive, onTrash, reducedMotion, x]
+    [committing, onRevealChange, reducedMotion, x]
   );
 
   const onTouchStart = (e: TouchEvent<HTMLDivElement>) => {
-    if (!swipeEnabled || collapsing || (!canArchive && !canTrash)) return;
+    if (!swipeEnabled || committing || actions.length === 0) return;
     if (e.touches.length !== 1) return;
     const t = e.touches[0]!;
     gesture.current = {
@@ -174,7 +234,7 @@ export function SwipeableThreadRow({
 
     if (g.locked === 'none') {
       if (Math.abs(dx) < LOCK_PX && Math.abs(dy) < LOCK_PX) return;
-      if (Math.abs(dy) > Math.abs(dx)) {
+      if (Math.abs(dy) * 1.5 >= Math.abs(dx)) {
         g.locked = 'vertical';
         gesture.current = null;
         return;
@@ -183,13 +243,12 @@ export function SwipeableThreadRow({
     }
 
     if (g.locked !== 'horizontal') return;
-
     if (e.cancelable) e.preventDefault();
 
     let next = g.baseX + dx;
-    if (!canArchive && next > 0) next = 0;
-    if (!canTrash && next < 0) next = 0;
-    const max = ACTION_WIDTH * 1.35;
+    if (!startAction && next > 0) next = 0;
+    if (!endAction && next < 0) next = 0;
+    const max = rowWidthRef.current * 0.82;
     x.set(Math.max(-max, Math.min(max, next)));
   };
 
@@ -198,13 +257,16 @@ export function SwipeableThreadRow({
     gesture.current = null;
     if (!g || g.locked !== 'horizontal') return;
 
+    tapGuardUntil.current = Date.now() + TAP_GUARD_MS;
     const current = x.get();
-    if (current <= -FULL_SWIPE && canTrash) {
-      void runAction('trash');
+    const commitThreshold = rowWidthRef.current * COMMIT_RATIO;
+
+    if (current >= commitThreshold && startAction?.allowFullSwipeCommit) {
+      void runCommitAnimation(startAction);
       return;
     }
-    if (current >= FULL_SWIPE && canArchive) {
-      void runAction('archive');
+    if (current <= -commitThreshold && endAction?.allowFullSwipeCommit) {
+      void runCommitAnimation(endAction);
       return;
     }
 
@@ -216,6 +278,19 @@ export function SwipeableThreadRow({
     }
   };
 
+  const handlePrimaryTap = useCallback(
+    (openThread: () => void) => {
+      if (Date.now() < tapGuardUntil.current) return;
+      const offset = Math.abs(x.get());
+      if (offset > 12) {
+        closeRow();
+        return;
+      }
+      openThread();
+    },
+    [closeRow, x]
+  );
+
   useEffect(() => {
     const el = shellRef.current;
     if (!el || !swipeEnabled) return;
@@ -226,61 +301,75 @@ export function SwipeableThreadRow({
     return () => el.removeEventListener('touchmove', blockScroll);
   }, [swipeEnabled]);
 
-  const showSwipeChrome = swipeEnabled && (canArchive || canTrash);
+  const showSwipeChrome = swipeEnabled && actions.length > 0;
 
   return (
-    <motion.li
-      {...motionProps}
-      ref={rowRef}
-      onMouseEnter={onMouseEnter}
-      className={`group relative border-b border-[var(--hairline)] last:border-b-0 transition-colors duration-150 hover:bg-[var(--surface-hover)] rounded-xl overflow-hidden ${className}`}
-      layout={!reducedMotion}
-    >
-      <div ref={shellRef} className="relative touch-pan-y">
-        {showSwipeChrome && (
-          <>
-            {canArchive && (
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={() => {
-                  void runAction('archive');
-                }}
-                className="absolute inset-y-0 left-0 z-0 w-[88px] flex flex-col items-center justify-center gap-1 bg-[#2a2622] text-[#F4EFE6] sacred-focus"
-                aria-label="Archivar"
-              >
-                <Archive className="w-5 h-5" strokeWidth={1.65} />
-                <span className="text-[11px] font-medium tracking-wide">Archivar</span>
-              </button>
-            )}
-            {canTrash && (
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={() => {
-                  void runAction('trash');
-                }}
-                className="absolute inset-y-0 right-0 z-0 w-[88px] flex flex-col items-center justify-center gap-1 bg-[#6B2222] text-[#F4EFE6] sacred-focus"
-                aria-label="Borrar"
-              >
-                <Trash2 className="w-5 h-5" strokeWidth={1.65} />
-                <span className="text-[11px] font-medium tracking-wide">Borrar</span>
-              </button>
-            )}
-          </>
-        )}
+    <SwipeRowTapContext.Provider value={{ handlePrimaryTap }}>
+      <motion.li
+        {...motionProps}
+        ref={rowRef}
+        onMouseEnter={onMouseEnter}
+        className={`group relative border-b border-[var(--hairline)] last:border-b-0 transition-colors duration-150 hover:bg-[var(--surface-hover)] rounded-xl overflow-hidden ${className}`}
+        layout={!reducedMotion}
+      >
+        <div ref={shellRef} className="relative touch-pan-y">
+          {showSwipeChrome && (
+            <>
+              {startAction && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void runCommitAnimation(startAction);
+                  }}
+                  style={{
+                    width: committing === startAction.kind ? commitFill : ACTION_WIDTH,
+                  }}
+                  className={`absolute inset-y-0 left-0 z-0 flex flex-col items-center justify-center gap-1 transition-[width] duration-200 sacred-focus ${actionTone(startAction.kind, 'start')} ${committing === startAction.kind ? 'opacity-100' : ''}`}
+                  aria-label={startAction.label}
+                >
+                  <ActionIcon kind={startAction.kind} />
+                  <span className="text-[11px] font-medium tracking-wide px-1 text-center leading-tight">
+                    {startAction.label}
+                  </span>
+                </button>
+              )}
+              {endAction && (
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void runCommitAnimation(endAction);
+                  }}
+                  style={{
+                    width: committing === endAction.kind ? commitFill : ACTION_WIDTH,
+                  }}
+                  className={`absolute inset-y-0 right-0 z-0 flex flex-col items-center justify-center gap-1 transition-[width] duration-200 sacred-focus ${actionTone(endAction.kind, 'end')} ${committing === endAction.kind ? 'opacity-100' : ''}`}
+                  aria-label={endAction.label}
+                >
+                  <ActionIcon kind={endAction.kind} />
+                  <span className="text-[11px] font-medium tracking-wide px-1 text-center leading-tight">
+                    {endAction.label}
+                  </span>
+                </button>
+              )}
+            </>
+          )}
 
-        <motion.div
-          style={{ x, touchAction: showSwipeChrome ? 'pan-y' : undefined }}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
-          onTouchCancel={onTouchEnd}
-          className="relative z-[1] bg-[var(--surface-bg)] group-hover:bg-[var(--surface-hover)] transition-colors duration-150"
-        >
-          {children}
-        </motion.div>
-      </div>
-    </motion.li>
+          <motion.div
+            style={{ x, touchAction: showSwipeChrome ? 'pan-y' : undefined }}
+            onTouchStart={onTouchStart}
+            onTouchMove={onTouchMove}
+            onTouchEnd={onTouchEnd}
+            onTouchCancel={onTouchEnd}
+            className="relative z-[1] bg-[var(--surface-bg)] group-hover:bg-[var(--surface-hover)] transition-colors duration-150"
+          >
+            {children}
+          </motion.div>
+        </div>
+      </motion.li>
+    </SwipeRowTapContext.Provider>
   );
 }

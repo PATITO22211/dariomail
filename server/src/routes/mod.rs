@@ -43,6 +43,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/messages/:id/read", post(mark_read))
         .route("/api/messages/:id/unread", post(mark_unread))
         .route("/api/messages/:id/archive", post(archive_message))
+        .route("/api/messages/:id/restore", post(restore_message))
+        .route("/api/messages/:id/destroy", post(destroy_message))
         .route("/api/messages/:id/move", post(move_message))
         .route("/api/messages/:id", axum::routing::delete(trash_message))
         .route("/api/messages/send", post(send_message))
@@ -330,6 +332,26 @@ async fn trash_message(
 ) -> Result<Json<Value>, ApiError> {
     auth::require_session(&state.cfg.secret, &headers)?;
     state.jmap.trash(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn restore_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    auth::require_session(&state.cfg.secret, &headers)?;
+    state.jmap.restore_to_inbox(&id).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn destroy_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    auth::require_session(&state.cfg.secret, &headers)?;
+    state.jmap.destroy_trash_email(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

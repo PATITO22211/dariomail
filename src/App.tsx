@@ -31,6 +31,7 @@ import { ReadingRoom } from './components/ReadingRoom';
 import { ComposeModal, type ComposeInitialState } from './components/ComposeModal';
 import { CommandPalette } from './components/CommandPalette';
 import { LoginScreen } from './components/LoginScreen';
+import { ConfirmDialog } from './components/ConfirmDialog';
 
 const THEME_KEY = 'dariomail-theme-v3';
 
@@ -182,10 +183,17 @@ export default function App() {
     if (!selectedThreadId && deepReading) setDeepReading(false);
   }, [selectedThreadId, deepReading]);
 
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  } | null>(null);
+
   const showNotice = useCallback((text: string, undo?: () => void) => {
     if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
     setNotice({ id: Date.now(), text, undo });
-    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 3400);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 5000);
   }, []);
 
   const mergeIncomingThread = useCallback((prev: MailThread[], item: MailThread): MailThread => {
@@ -636,7 +644,7 @@ export default function App() {
           const next = await api.mailboxes();
           setMailboxes(next);
           setCounts(countsFromMailboxes(next));
-          showNotice('En papelera', () => {
+          showNotice('Movido a la papelera', () => {
             if (!previousMailbox) return;
             void (async () => {
               await Promise.all(ids.map((id) => api.move(id, previousMailbox)));
@@ -660,30 +668,98 @@ export default function App() {
     [api, mailboxes, resolveIds, selectedThreadId, showNotice, threads]
   );
 
-  const handleRestoreThread = useCallback(
+  const handleMoveToInbox = useCallback(
     (threadId: string) => {
       const target = threads.find((thread) => thread.id === threadId);
-      const inboxId = mailboxes.find((mailbox) => mailbox.folder === 'inbox')?.id;
-      if (!target || !inboxId) return;
+      if (!target || (target.folder !== 'trash' && target.folder !== 'archive')) return;
+      const previousFolder = target.folder;
+      const previousUnread = target.unread;
+      const wasReading = selectedThreadId === threadId;
+
+      setThreads((prev) => moveThreadToFolder(prev, threadId, 'inbox'));
+      if (wasReading) {
+        setSelectedThreadId(null);
+        setDeepReading(false);
+      }
+
       void (async () => {
         try {
           const ids = await resolveIds(target);
-          await Promise.all(ids.map((id) => api.move(id, inboxId)));
-          setThreads((prev) => moveThreadToFolder(prev, threadId, 'inbox'));
-          if (selectedThreadId === threadId) {
-            setSelectedThreadId(null);
-            setDeepReading(false);
-          }
+          await Promise.all(ids.map((id) => api.restore(id)));
           const next = await api.mailboxes();
           setMailboxes(next);
           setCounts(countsFromMailboxes(next));
-          showNotice('Restaurado');
+          showNotice('Movido a Recibidos', () => {
+            void (async () => {
+              const origin =
+                previousFolder === 'trash'
+                  ? mailboxes.find((mailbox) => mailbox.folder === 'trash')?.id
+                  : mailboxes.find((mailbox) => mailbox.folder === 'archive')?.id;
+              if (!origin) return;
+              await Promise.all(ids.map((id) => api.move(id, origin)));
+              setThreads((prev) =>
+                setThreadUnread(moveThreadToFolder(prev, threadId, previousFolder), threadId, previousUnread)
+              );
+              const restored = await api.mailboxes();
+              setMailboxes(restored);
+              setCounts(countsFromMailboxes(restored));
+            })().catch((err) => showNotice(messageOf(err)));
+          });
         } catch (err) {
+          setThreads((prev) =>
+            setThreadUnread(moveThreadToFolder(prev, threadId, previousFolder), threadId, previousUnread)
+          );
+          if (wasReading) setSelectedThreadId(threadId);
           showNotice(messageOf(err));
         }
       })();
     },
     [api, mailboxes, resolveIds, selectedThreadId, showNotice, threads]
+  );
+
+  const handleRestoreThread = useCallback(
+    (threadId: string) => {
+      handleMoveToInbox(threadId);
+    },
+    [handleMoveToInbox]
+  );
+
+  const handlePermanentDeleteThread = useCallback(
+    (threadId: string) => {
+      const target = threads.find((thread) => thread.id === threadId);
+      if (!target || target.folder !== 'trash') return;
+      const wasReading = selectedThreadId === threadId;
+
+      setConfirmDialog({
+        title: '¿Borrar definitivamente?',
+        message:
+          'Este mensaje se eliminará para siempre y no podrás recuperarlo desde la papelera.',
+        confirmLabel: 'Borrar definitivamente',
+        onConfirm: () => {
+          setConfirmDialog(null);
+          setThreads((prev) => prev.filter((thread) => thread.id !== threadId));
+          if (wasReading) {
+            setSelectedThreadId(null);
+            setDeepReading(false);
+          }
+          void (async () => {
+            try {
+              const ids = await resolveIds(target);
+              await Promise.all(ids.map((id) => api.destroy(id)));
+              const next = await api.mailboxes();
+              setMailboxes(next);
+              setCounts(countsFromMailboxes(next));
+              showNotice('Mensaje eliminado definitivamente');
+            } catch (err) {
+              setThreads((prev) => [target, ...prev]);
+              if (wasReading) setSelectedThreadId(threadId);
+              showNotice(messageOf(err));
+            }
+          })();
+        },
+      });
+    },
+    [api, resolveIds, selectedThreadId, showNotice, threads]
   );
 
   const handleToggleUnread = useCallback(
@@ -1207,6 +1283,8 @@ export default function App() {
               onArchive={() => handleArchiveThread(selectedThread.id)}
               onTrash={() => handleTrashThread(selectedThread.id)}
               onRestore={() => handleRestoreThread(selectedThread.id)}
+              onMoveToInbox={() => handleMoveToInbox(selectedThread.id)}
+              onDeletePermanently={() => handlePermanentDeleteThread(selectedThread.id)}
               onMarkUnread={() => {
                 handleToggleUnread(selectedThread.id, true);
                 setDeepReading(false);
@@ -1247,6 +1325,8 @@ export default function App() {
               onArchiveThread={handleArchiveThread}
               onTrashThread={handleTrashThread}
               onRestoreThread={handleRestoreThread}
+              onMoveToInboxThread={handleMoveToInbox}
+              onPermanentDeleteThread={handlePermanentDeleteThread}
               onToggleUnread={handleToggleUnread}
               onEmptyTrash={handleEmptyTrash}
               onOpenMobileMenu={() => setMobileMenuOpen(true)}
@@ -1303,6 +1383,16 @@ export default function App() {
         remoteCommands={paletteRemote}
         onQueryChange={setPaletteQuery}
         onClose={() => setPaletteOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(confirmDialog)}
+        title={confirmDialog?.title ?? ''}
+        message={confirmDialog?.message ?? ''}
+        confirmLabel={confirmDialog?.confirmLabel}
+        dangerous
+        onConfirm={() => confirmDialog?.onConfirm()}
+        onCancel={() => setConfirmDialog(null)}
       />
     </div>
   );

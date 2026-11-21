@@ -13,6 +13,7 @@ import {
   BookOpen,
   ChevronDown,
   Forward,
+  Inbox,
   Mail,
   Minimize2,
   Paperclip,
@@ -43,6 +44,8 @@ interface ReadingRoomProps {
   onArchive: () => void;
   onTrash: () => void;
   onRestore: () => void;
+  onMoveToInbox: () => void;
+  onDeletePermanently: () => void;
   onMarkUnread: () => void;
   onForward: () => void;
   onShowRemoteImages: (messageId: string) => void;
@@ -101,6 +104,8 @@ export function ReadingRoom({
   onArchive,
   onTrash,
   onRestore,
+  onMoveToInbox,
+  onDeletePermanently,
   onMarkUnread,
   onForward,
   onShowRemoteImages,
@@ -326,11 +331,25 @@ export function ReadingRoom({
                     whileHover={{ scale: 1.06 }}
                     whileTap={{ scale: 0.94 }}
                     onClick={onRestore}
-                    aria-label="Restaurar hilo"
+                    aria-label="Restaurar hilo a Recibidos"
                     title="Restaurar"
                     className="p-2 rounded-full text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
                   >
                     <RotateCcw className="w-4 h-4" strokeWidth={1.65} />
+                  </motion.button>
+                )}
+
+                {thread.folder === 'archive' && (
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.06 }}
+                    whileTap={{ scale: 0.94 }}
+                    onClick={onMoveToInbox}
+                    aria-label="Mover a Recibidos"
+                    title="Mover a Recibidos"
+                    className="p-2 rounded-full text-[var(--ink-secondary)] hover:text-[var(--ink-primary)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
+                  >
+                    <Inbox className="w-4 h-4" strokeWidth={1.65} />
                   </motion.button>
                 )}
 
@@ -348,7 +367,19 @@ export function ReadingRoom({
                   </motion.button>
                 )}
 
-                {thread.folder !== 'trash' && (
+                {thread.folder === 'trash' ? (
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.06 }}
+                    whileTap={{ scale: 0.94 }}
+                    onClick={onDeletePermanently}
+                    aria-label="Borrar definitivamente"
+                    title="Borrar definitivamente"
+                    className="p-2 rounded-full text-[var(--accent)] hover:text-[#f4efe6] hover:bg-[#6B2222] transition-colors sacred-focus cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" strokeWidth={1.65} />
+                  </motion.button>
+                ) : (
                   <motion.button
                     type="button"
                     whileHover={{ scale: 1.06 }}
