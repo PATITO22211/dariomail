@@ -552,15 +552,42 @@ impl JmapClient {
         if let Some(session) = self.session.read().await.clone() {
             return Ok(session);
         }
-        let url = format!("{}/.well-known/jmap", self.base_url);
-        let response = self
-            .http
-            .get(&url)
-            .header("Authorization", self.authorization())
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|err| ApiError::Upstream(format!("No se pudo leer la sesión JMAP ({err})")))?;
+        // Stalwart responde 307 en /.well-known/jmap hacia /jmap/session (RFC 8620 lo permite).
+        // Seguimos hasta 3 redirecciones solo dentro del mismo origen para no mandar la credencial fuera.
+        let mut url = reqwest::Url::parse(&format!("{}/.well-known/jmap", self.base_url))
+            .map_err(|_| ApiError::Upstream("STALWART_BASE_URL no es válida".into()))?;
+        let mut hops = 0;
+        let response = loop {
+            let response = self
+                .http
+                .get(url.clone())
+                .header("Authorization", self.authorization())
+                .header("Accept", "application/json")
+                .send()
+                .await
+                .map_err(|err| {
+                    ApiError::Upstream(format!("No se pudo leer la sesión JMAP ({err})"))
+                })?;
+            if !response.status().is_redirection() || hops >= 3 {
+                break response;
+            }
+            let next = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|location| url.join(location).ok())
+                .ok_or_else(|| ApiError::Upstream("Redirección JMAP sin destino".into()))?;
+            if next.origin() != url.origin() {
+                return Err(ApiError::Upstream(
+                    "La sesión JMAP redirige a otro servidor".into(),
+                ));
+            }
+            let mut next = next;
+            let _ = next.set_username("");
+            let _ = next.set_password(None);
+            url = next;
+            hops += 1;
+        };
         if !response.status().is_success() {
             return Err(ApiError::Upstream("No se pudo abrir la sesión JMAP".into()));
         }
