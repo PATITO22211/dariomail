@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DarioMail">
+  <rect width="512" height="512" fill="#12100e"/>
+  <rect x="136" y="176" width="240" height="168" rx="8" fill="none" stroke="#F4EFE6" stroke-width="28"/>
+  <path d="M136 176 L256 292 L376 176" fill="none" stroke="#F4EFE6" stroke-width="28" stroke-linejoin="miter" stroke-linecap="square"/>
+  <rect x="232" y="296" width="48" height="8" fill="#6B2222"/>
+</svg>

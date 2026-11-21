@@ -409,15 +409,18 @@ export default function App() {
       if (!target || target.folder === 'archive' || target.folder === 'trash') return;
       const previousFolder = target.folder;
       const previousUnread = target.unread;
+      const wasReading = selectedThreadId === threadId;
+
+      setThreads((prev) => moveThreadToFolder(prev, threadId, 'archive'));
+      if (wasReading) {
+        setSelectedThreadId(null);
+        setDeepReading(false);
+      }
+
       void (async () => {
         try {
           const ids = await resolveIds(target);
           await Promise.all(ids.map((id) => api.archive(id)));
-          setThreads((prev) => moveThreadToFolder(prev, threadId, 'archive'));
-          if (selectedThreadId === threadId) {
-            setSelectedThreadId(null);
-            setDeepReading(false);
-          }
           const next = await api.mailboxes();
           setMailboxes(next);
           setCounts(countsFromMailboxes(next));
@@ -435,6 +438,10 @@ export default function App() {
             })().catch((err) => showNotice(messageOf(err)));
           });
         } catch (err) {
+          setThreads((prev) =>
+            setThreadUnread(moveThreadToFolder(prev, threadId, previousFolder), threadId, previousUnread)
+          );
+          if (wasReading) setSelectedThreadId(threadId);
           showNotice(messageOf(err));
         }
       })();
@@ -448,19 +455,22 @@ export default function App() {
       if (!target || target.folder === 'trash') return;
       const previousFolder = target.folder;
       const previousUnread = target.unread;
+      const wasReading = selectedThreadId === threadId;
+      const previousMailbox = mailboxes.find((mailbox) => mailbox.folder === previousFolder)?.id;
+
+      setThreads((prev) => moveThreadToFolder(prev, threadId, 'trash'));
+      if (wasReading) {
+        setSelectedThreadId(null);
+        setDeepReading(false);
+      }
+
       void (async () => {
         try {
           const ids = await resolveIds(target);
           await Promise.all(ids.map((id) => api.trash(id)));
-          setThreads((prev) => moveThreadToFolder(prev, threadId, 'trash'));
-          if (selectedThreadId === threadId) {
-            setSelectedThreadId(null);
-            setDeepReading(false);
-          }
           const next = await api.mailboxes();
           setMailboxes(next);
           setCounts(countsFromMailboxes(next));
-          const previousMailbox = mailboxes.find((mailbox) => mailbox.folder === previousFolder)?.id;
           showNotice('En papelera', () => {
             if (!previousMailbox) return;
             void (async () => {
@@ -474,6 +484,10 @@ export default function App() {
             })().catch((err) => showNotice(messageOf(err)));
           });
         } catch (err) {
+          setThreads((prev) =>
+            setThreadUnread(moveThreadToFolder(prev, threadId, previousFolder), threadId, previousUnread)
+          );
+          if (wasReading) setSelectedThreadId(threadId);
           showNotice(messageOf(err));
         }
       })();
