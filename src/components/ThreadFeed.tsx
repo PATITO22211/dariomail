@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, useScroll, useSpring, useTransform } from 'motion/react';
 import {
+  SwipeableThreadRow,
+  usePrefersReducedMotion,
+  useSwipeListEnabled,
+} from './SwipeableThreadRow';
+import {
   Archive,
+  Loader2,
   Mail,
   MailOpen,
   Menu,
@@ -11,17 +17,26 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { FolderId, MailThread } from '../types/mail';
+import type { FeedLoadState, FolderId, MailThread } from '../types/mail';
 import {
   FOLDER_META,
   formatEditorialTimestamp,
   getThreadDisplaySender,
 } from '../utils/mailStore';
 import { useSmoothWheelScroll } from '../utils/smoothScroll';
+import { ThreadListSkeleton } from './ThreadListSkeleton';
+import { usePullToRefresh } from '../hooks/usePullToRefresh';
 
 interface ThreadFeedProps {
   folder: FolderId;
   threads: MailThread[];
+  feedLoadState: FeedLoadState;
+  feedLoadError: string | null;
+  feedLoadedOnce: boolean;
+  searchLoadState: FeedLoadState;
+  searchLoadError: string | null;
+  onRetryLoad: () => void;
+  onPullRefresh: () => Promise<void>;
   searchQuery: string;
   focusedIndex: number;
   currentUserEmail: string;
@@ -98,13 +113,32 @@ export function ThreadFeed({
   onFocusIndexChange,
   hasMore,
   onLoadMore,
+  feedLoadState,
+  feedLoadError,
+  feedLoadedOnce,
+  searchLoadState,
+  searchLoadError,
+  onRetryLoad,
+  onPullRefresh,
 }: ThreadFeedProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const rowRefs = useRef<Array<HTMLLIElement | null>>([]);
   const [inboxFilter, setInboxFilter] = useState<InboxFilter>('all');
+  const [revealedThreadId, setRevealedThreadId] = useState<string | null>(null);
+  const swipeEnabled = useSwipeListEnabled();
+  const reducedMotion = usePrefersReducedMotion();
   const folderInfo = FOLDER_META[folder];
 
+  useEffect(() => {
+    setRevealedThreadId(null);
+  }, [folder, searchQuery, inboxFilter]);
+
   useSmoothWheelScroll(scrollRef);
+  const { pullDistance, refreshing, pullHandlers } = usePullToRefresh(
+    scrollRef,
+    swipeEnabled,
+    onPullRefresh
+  );
 
   const { scrollY, scrollYProgress } = useScroll({ container: scrollRef });
   const smoothProgress = useSpring(scrollYProgress, {
@@ -132,6 +166,14 @@ export function ThreadFeed({
       targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [focusedIndex]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const closeRevealed = () => setRevealedThreadId(null);
+    el.addEventListener('scroll', closeRevealed, { passive: true });
+    return () => el.removeEventListener('scroll', closeRevealed);
+  }, []);
 
   const unreadCount = useMemo(
     () => threads.filter((t) => t.unread).length,
@@ -166,6 +208,20 @@ export function ThreadFeed({
     return { today, earlier };
   }, [displayedThreads, referenceIso]);
 
+  const searching = Boolean(searchQuery.trim());
+  const showLoadingSkeleton =
+    (searching && searchLoadState === 'loading') ||
+    (!searching && feedLoadState === 'loading' && threads.length === 0);
+  const showLoadError =
+    (searching && searchLoadState === 'error' && threads.length === 0) ||
+    (!searching && feedLoadState === 'error' && threads.length === 0);
+  const loadErrorMessage = searching ? searchLoadError : feedLoadError;
+  const showEmptyState =
+    !showLoadingSkeleton &&
+    !showLoadError &&
+    (searching ? searchLoadState === 'ready' : feedLoadedOnce) &&
+    displayedThreads.length === 0;
+
   const renderThreadRow = (thread: MailThread, globalIndex: number) => {
     const latestMsg = thread.messages[thread.messages.length - 1];
     const displaySender = getThreadDisplaySender(thread, currentUserEmail);
@@ -177,28 +233,15 @@ export function ThreadFeed({
       latestMsg?.sender.avatar;
     const avatarName = latestMsg?.sender.name ?? displaySender;
 
-    return (
-      <motion.li
-        key={thread.id}
-        ref={(el) => {
-          rowRefs.current[globalIndex] = el;
-        }}
-        initial={{ opacity: 0, y: 12 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ root: scrollRef, once: true, amount: 0.06 }}
-        transition={{
-          duration: 0.28,
-          delay: Math.min(globalIndex * 0.024, 0.12),
-          ease: [0.22, 1, 0.36, 1],
-        }}
-        onMouseEnter={() => onFocusIndexChange(globalIndex)}
-        className="group relative border-b border-[var(--hairline)] last:border-b-0 transition-colors duration-150 hover:bg-[var(--surface-hover)] rounded-xl"
-      >
-        {/* Subtle left burgundy rail on keyboard focus */}
+    const canArchive = folder !== 'archive' && folder !== 'trash';
+    const canTrash = folder !== 'trash';
+
+    const rowInner = (
+      <>
         {isFocused && (
           <span
             aria-hidden="true"
-            className="absolute left-0 top-4 bottom-4 w-[2px] rounded-full bg-[var(--accent)] pointer-events-none"
+            className="absolute left-0 top-4 bottom-4 w-[2px] rounded-full bg-[var(--accent)] pointer-events-none z-[2]"
           />
         )}
 
@@ -270,8 +313,7 @@ export function ThreadFeed({
           </div>
         </button>
 
-        {/* Quiet Hover Quick Actions over Top-Right Timestamp */}
-        <div className="absolute right-3 top-3.5 flex items-center gap-0.5 px-1.5 py-1 rounded-full floating-monolith opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity duration-150">
+        <div className="absolute right-3 top-3.5 hidden md:flex items-center gap-0.5 px-1.5 py-1 rounded-full floating-monolith opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto transition-opacity duration-150">
           {folder !== 'archive' && folder !== 'trash' && (
             <button
               type="button"
@@ -340,8 +382,39 @@ export function ThreadFeed({
             </button>
           )}
         </div>
-      </motion.li>
+      </>
     );
+
+  return (
+    <SwipeableThreadRow
+      key={thread.id}
+      threadId={thread.id}
+      canArchive={canArchive}
+      canTrash={canTrash}
+      swipeEnabled={swipeEnabled}
+      reducedMotion={reducedMotion}
+      isRevealed={revealedThreadId === thread.id}
+      onRevealChange={setRevealedThreadId}
+      onArchive={() => onArchiveThread(thread.id)}
+      onTrash={() => onTrashThread(thread.id)}
+      rowRef={(el) => {
+        rowRefs.current[globalIndex] = el;
+      }}
+      onMouseEnter={() => onFocusIndexChange(globalIndex)}
+      motionProps={{
+        initial: { opacity: 0, y: 12 },
+        whileInView: { opacity: 1, y: 0 },
+        viewport: { root: scrollRef, once: true, amount: 0.06 },
+        transition: {
+          duration: reducedMotion ? 0 : 0.28,
+          delay: reducedMotion ? 0 : Math.min(globalIndex * 0.024, 0.12),
+          ease: [0.22, 1, 0.36, 1],
+        },
+      }}
+    >
+      {rowInner}
+    </SwipeableThreadRow>
+  );
   };
 
   return (
@@ -438,8 +511,25 @@ export function ThreadFeed({
       <div
         ref={scrollRef}
         onScroll={(e) => onScrollChange(e.currentTarget.scrollTop)}
-        className="flex-1 overflow-y-auto editorial-scroll-mask px-6 md:px-10 pb-16"
+        {...pullHandlers}
+        className="flex-1 overflow-y-auto editorial-scroll-mask px-6 md:px-10 pb-16 relative"
+        style={{ touchAction: swipeEnabled ? 'pan-y' : undefined }}
       >
+        {(pullDistance > 0 || refreshing) && swipeEnabled && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 right-0 top-0 z-10 flex justify-center"
+            style={{ height: Math.max(pullDistance, refreshing ? 40 : 0) }}
+          >
+            <div className="pt-3 flex items-center gap-2 text-[12px] text-[var(--ink-muted)]">
+              <Loader2
+                className={`w-4 h-4 ${refreshing && !reducedMotion ? 'animate-spin' : ''}`}
+                strokeWidth={1.65}
+              />
+              <span>{refreshing ? 'Actualizando…' : 'Suelta para actualizar'}</span>
+            </div>
+          </div>
+        )}
         <div className="w-full max-w-[960px] mx-auto">
           {/* Literary Masthead + Redesigned Segmented Switch (Todos / No leídos) */}
           <motion.header
@@ -548,7 +638,32 @@ export function ThreadFeed({
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
           >
-            {displayedThreads.length === 0 ? (
+            {showLoadingSkeleton ? (
+              <ThreadListSkeleton />
+            ) : showLoadError ? (
+              <div
+                className="py-24 flex flex-col items-center justify-center text-center px-6"
+                role="alert"
+              >
+                <p
+                  className="text-[28px] font-normal leading-tight text-[var(--ink-primary)] mb-2"
+                  style={{ fontFamily: 'var(--font-serif)' }}
+                >
+                  No se pudo cargar
+                </p>
+                <p className="text-[14px] text-[var(--ink-muted)] max-w-sm leading-relaxed mb-6">
+                  {loadErrorMessage ?? 'Hubo un problema al obtener tus mensajes.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={onRetryLoad}
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[var(--cta-bg)] text-[var(--cta-ink)] text-[13px] font-medium cursor-pointer sacred-focus"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.8} />
+                  Reintentar
+                </button>
+              </div>
+            ) : showEmptyState ? (
               <div className="py-24 flex flex-col items-center justify-center text-center px-6">
                 <p
                   className="text-[32px] font-normal leading-tight text-[var(--ink-primary)] mb-2"
