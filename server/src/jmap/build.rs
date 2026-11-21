@@ -260,8 +260,8 @@ pub fn build_send(account: &str, mail: &OutboundMail) -> Value {
         "from": [{"name": mail.from_name, "email": mail.from_email}],
         "to": addresses(&mail.to),
         "subject": mail.subject,
-        "htmlBody": [{"partId": "html", "type": "text/html", "charset": "utf-8"}],
-        "textBody": [{"partId": "text", "type": "text/plain", "charset": "utf-8"}],
+        "htmlBody": [{"partId": "html", "type": "text/html"}],
+        "textBody": [{"partId": "text", "type": "text/plain"}],
         "bodyValues": {
             "html": {"value": mail.html, "isEncodingProblem": false, "isTruncated": false},
             "text": {"value": mail.text, "isEncodingProblem": false, "isTruncated": false}
@@ -316,7 +316,8 @@ pub fn build_send(account: &str, mail: &OutboundMail) -> Value {
                 "accountId": account,
                 "create": {
                     "sub": {
-                        "#emailId": {"resultOf": "em", "name": "Email/set", "path": "/created/msg/id"},
+                        // RFC 8620 5.3: dentro de create se referencia el id de creación con "#msg".
+                        "emailId": "#msg",
                         "identityId": mail.identity_id,
                         "envelope": {
                             "mailFrom": {"email": mail.from_email},
@@ -341,8 +342,8 @@ pub fn build_draft(
         "from": [{"name": mail.from_name, "email": mail.from_email}],
         "to": addresses(&mail.to),
         "subject": mail.subject,
-        "htmlBody": [{"partId": "html", "type": "text/html", "charset": "utf-8"}],
-        "textBody": [{"partId": "text", "type": "text/plain", "charset": "utf-8"}],
+        "htmlBody": [{"partId": "html", "type": "text/html"}],
+        "textBody": [{"partId": "text", "type": "text/plain"}],
         "bodyValues": {
             "html": {"value": mail.html},
             "text": {"value": mail.text}
@@ -438,13 +439,16 @@ mod tests {
             "blob-1"
         );
         assert_eq!(calls[0][1]["destroy"][0], "draft-1");
+        // RFC 8621: con partId no se manda charset (Stalwart lo rechaza con invalidProperties).
+        for key in ["htmlBody", "textBody"] {
+            assert!(calls[0][1]["create"]["msg"][key][0]
+                .get("charset")
+                .is_none());
+        }
         assert_eq!(calls[1][0], "EmailSubmission/set");
         assert_eq!(calls[1][1]["create"]["sub"]["identityId"], "ident-1");
-        assert_eq!(calls[1][1]["create"]["sub"]["#emailId"]["resultOf"], "em");
-        assert_eq!(
-            calls[1][1]["create"]["sub"]["#emailId"]["path"],
-            "/created/msg/id"
-        );
+        assert_eq!(calls[1][1]["create"]["sub"]["emailId"], "#msg");
+        assert!(calls[1][1]["create"]["sub"].get("#emailId").is_none());
         assert_eq!(
             calls[1][1]["create"]["sub"]["envelope"]["rcptTo"][1]["email"],
             "bcc@example.com"

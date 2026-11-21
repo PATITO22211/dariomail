@@ -375,9 +375,17 @@ impl JmapClient {
         let calls = parse_method_responses(&response)?;
         let email_set = method_payload(&calls, "em")?;
         ensure_set_ok(&email_set)?;
-        ensure_set_ok(&method_payload(&calls, "sub")?)?;
-        created_id(&email_set, "msg")
-            .ok_or_else(|| ApiError::Upstream("El envío no devolvió id".into()))
+        let email_id = created_id(&email_set, "msg")
+            .ok_or_else(|| ApiError::Upstream("El envío no devolvió id".into()))?;
+        let submitted = method_payload(&calls, "sub").and_then(|sub| ensure_set_ok(&sub));
+        if let Err(err) = submitted {
+            // Si no salió, no dejamos una copia fantasma en Enviados.
+            let _ = self
+                .call(&build_destroy(&session.account_id, &email_id))
+                .await;
+            return Err(err);
+        }
+        Ok(email_id)
     }
 
     pub async fn upload_blob(
@@ -552,15 +560,42 @@ impl JmapClient {
         if let Some(session) = self.session.read().await.clone() {
             return Ok(session);
         }
-        let url = format!("{}/.well-known/jmap", self.base_url);
-        let response = self
-            .http
-            .get(&url)
-            .header("Authorization", self.authorization())
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .map_err(|err| ApiError::Upstream(format!("No se pudo leer la sesión JMAP ({err})")))?;
+        // Stalwart responde 307 en /.well-known/jmap hacia /jmap/session (RFC 8620 lo permite).
+        // Seguimos hasta 3 redirecciones solo dentro del mismo origen para no mandar la credencial fuera.
+        let mut url = reqwest::Url::parse(&format!("{}/.well-known/jmap", self.base_url))
+            .map_err(|_| ApiError::Upstream("STALWART_BASE_URL no es válida".into()))?;
+        let mut hops = 0;
+        let response = loop {
+            let response = self
+                .http
+                .get(url.clone())
+                .header("Authorization", self.authorization())
+                .header("Accept", "application/json")
+                .send()
+                .await
+                .map_err(|err| {
+                    ApiError::Upstream(format!("No se pudo leer la sesión JMAP ({err})"))
+                })?;
+            if !response.status().is_redirection() || hops >= 3 {
+                break response;
+            }
+            let next = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|location| url.join(location).ok())
+                .ok_or_else(|| ApiError::Upstream("Redirección JMAP sin destino".into()))?;
+            if next.origin() != url.origin() {
+                return Err(ApiError::Upstream(
+                    "La sesión JMAP redirige a otro servidor".into(),
+                ));
+            }
+            let mut next = next;
+            let _ = next.set_username("");
+            let _ = next.set_password(None);
+            url = next;
+            hops += 1;
+        };
         if !response.status().is_success() {
             return Err(ApiError::Upstream("No se pudo abrir la sesión JMAP".into()));
         }

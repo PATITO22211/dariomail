@@ -96,6 +96,35 @@ body,
   }
 }
 
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -80% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    100deg,
+    var(--surface-input) 0%,
+    var(--surface-hover) 42%,
+    var(--surface-liquid) 50%,
+    var(--surface-hover) 58%,
+    var(--surface-input) 100%
+  );
+  background-size: 240% 100%;
+  animation: skeleton-shimmer 1.65s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer {
+    animation: none;
+    background: var(--surface-input);
+  }
+}
+
 /* Floating translucent paper/espresso dock */
 .floating-monolith {
   background-color: var(--surface-float);
