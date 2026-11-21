@@ -69,11 +69,11 @@ export function useSwipeRowPrimaryTap(openThread: () => void) {
   };
 }
 
-function actionTone(kind: SwipeActionKind, side: 'start' | 'end'): string {
-  if (kind === 'trash' || kind === 'destroy') return 'bg-[#6B2222] text-[#F4EFE6]';
-  if (kind === 'restore' || kind === 'inbox') return 'bg-[#2d4a36] text-[#F4EFE6]';
-  if (side === 'start') return 'bg-[#2a2622] text-[#F4EFE6]';
-  return 'bg-[#6B2222] text-[#F4EFE6]';
+function actionTone(kind: SwipeActionKind): string {
+  if (kind === 'trash' || kind === 'destroy') {
+    return 'bg-[var(--destructive-bg)] text-[var(--destructive-ink)]';
+  }
+  return 'bg-[color-mix(in_srgb,var(--accent)_28%,var(--canvas-bg))] text-[var(--accent)]';
 }
 
 function ActionIcon({ kind }: { kind: SwipeActionKind }) {
@@ -326,7 +326,7 @@ export function SwipeableThreadRow({
                   style={{
                     width: committing === startAction.kind ? commitFill : ACTION_WIDTH,
                   }}
-                  className={`absolute inset-y-0 left-0 z-0 flex flex-col items-center justify-center gap-1 transition-[width] duration-200 sacred-focus ${actionTone(startAction.kind, 'start')} ${committing === startAction.kind ? 'opacity-100' : ''}`}
+                  className={`absolute inset-y-0 left-0 z-0 flex flex-col items-center justify-center gap-1 transition-[width] duration-200 sacred-focus ${actionTone(startAction.kind)} ${committing === startAction.kind ? 'opacity-100' : ''}`}
                   aria-label={startAction.label}
                 >
                   <ActionIcon kind={startAction.kind} />
@@ -346,7 +346,7 @@ export function SwipeableThreadRow({
                   style={{
                     width: committing === endAction.kind ? commitFill : ACTION_WIDTH,
                   }}
-                  className={`absolute inset-y-0 right-0 z-0 flex flex-col items-center justify-center gap-1 transition-[width] duration-200 sacred-focus ${actionTone(endAction.kind, 'end')} ${committing === endAction.kind ? 'opacity-100' : ''}`}
+                  className={`absolute inset-y-0 right-0 z-0 flex flex-col items-center justify-center gap-1 transition-[width] duration-200 sacred-focus ${actionTone(endAction.kind)} ${committing === endAction.kind ? 'opacity-100' : ''}`}
                   aria-label={endAction.label}
                 >
                   <ActionIcon kind={endAction.kind} />

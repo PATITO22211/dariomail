@@ -453,7 +453,7 @@ export function ThreadFeed({
               }}
               aria-label={`Mover a papelera "${thread.subject}"`}
               title="Eliminar"
-              className="p-1.5 rounded-full text-[var(--ink-secondary)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
+              className="p-1.5 rounded-full text-[var(--ink-secondary)] hover:text-[var(--destructive)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" strokeWidth={1.65} />
             </button>
@@ -697,7 +697,7 @@ export function ThreadFeed({
                 <button
                   type="button"
                   onClick={onEmptyTrash}
-                  className="px-3.5 py-1.5 rounded-full border border-[var(--hairline-strong)] text-[12.5px] text-[var(--ink-secondary)] hover:text-[var(--accent)] hover:border-[var(--accent)]/40 transition-colors whitespace-nowrap shrink-0 sacred-focus cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-full border border-[var(--hairline-strong)] text-[12.5px] text-[var(--ink-secondary)] hover:text-[var(--destructive)] hover:border-[color-mix(in_srgb,var(--destructive)_45%,transparent)] transition-colors whitespace-nowrap shrink-0 sacred-focus cursor-pointer"
                 >
                   Vaciar papelera
                 </button>

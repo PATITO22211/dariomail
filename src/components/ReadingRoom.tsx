@@ -375,7 +375,7 @@ export function ReadingRoom({
                     onClick={onDeletePermanently}
                     aria-label="Borrar definitivamente"
                     title="Borrar definitivamente"
-                    className="p-2 rounded-full text-[var(--accent)] hover:text-[#f4efe6] hover:bg-[#6B2222] transition-colors sacred-focus cursor-pointer"
+                    className="p-2 rounded-full text-[var(--destructive)] hover:text-[var(--destructive-ink)] hover:bg-[var(--destructive-bg)] transition-colors sacred-focus cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" strokeWidth={1.65} />
                   </motion.button>
@@ -387,7 +387,7 @@ export function ReadingRoom({
                     onClick={onTrash}
                     aria-label="Mover hilo a papelera"
                     title="Eliminar"
-                    className="p-2 rounded-full text-[var(--ink-secondary)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
+                    className="p-2 rounded-full text-[var(--ink-secondary)] hover:text-[var(--destructive)] hover:bg-[var(--surface-hover)] transition-colors sacred-focus cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" strokeWidth={1.65} />
                   </motion.button>

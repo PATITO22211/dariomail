@@ -21,7 +21,7 @@ export function InvisibleIframe({ html, theme, title }: InvisibleIframeProps) {
     const inkHeading = isDark ? '#f4efe6' : '#1c1915';
     const muted = isDark ? '#8b8277' : '#7c7368';
     const hairline = isDark ? 'rgba(244,239,230,0.1)' : 'rgba(28,25,21,0.1)';
-    const accent = isDark ? '#d46b68' : '#7c1d24';
+    const accent = isDark ? '#22d3ee' : '#0e9aaf';
 
     return `<!doctype html>
 <html lang="es">

@@ -66,7 +66,7 @@ export function ConfirmDialog({
             onClick={onConfirm}
             className={`px-4 py-2 rounded-full text-[13px] font-medium sacred-focus cursor-pointer ${
               dangerous
-                ? 'bg-[#6B2222] text-[#F4EFE6]'
+                ? 'bg-[var(--destructive-bg)] text-[var(--destructive-ink)]'
                 : 'bg-[var(--cta-bg)] text-[var(--cta-ink)]'
             }`}
           >
